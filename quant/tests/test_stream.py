@@ -78,9 +78,7 @@ def test_parse_malformed_returns_none():
 
 
 def test_ms_conversion_keeps_milliseconds():
-    assert _ms_to_datetime(1793427780999) == datetime(
-        2026, 10, 31, 6, 23, 0, 999_000, tzinfo=UTC
-    )
+    assert _ms_to_datetime(1793427780999) == datetime(2026, 10, 31, 6, 23, 0, 999_000, tzinfo=UTC)
 
 
 def test_stream_names():

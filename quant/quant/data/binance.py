@@ -325,9 +325,7 @@ class BinanceMarketData:
         progress: Callable[[int, pl.DataFrame], None] | None = None,
     ) -> pl.DataFrame:
         frames = list(
-            self.iter_klines(
-                symbol, interval, start=start, end=end, limit=limit, progress=progress
-            )
+            self.iter_klines(symbol, interval, start=start, end=end, limit=limit, progress=progress)
         )
         if not frames:
             return empty_bars()

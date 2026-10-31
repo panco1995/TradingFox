@@ -1,23 +1,30 @@
 """Command line entry point.
 
-    quant fetch   --symbol BTCUSDT --days 7
-    quant inspect --symbol BTCUSDT --days 7 --svg data/chart.svg
-    quant quality --symbol BTCUSDT --days 30
-    quant symbols --symbol BTCUSDT
+quant fetch   --symbol BTCUSDT --days 7
+quant inspect --symbol BTCUSDT --days 7 --svg data/chart.svg
+quant quality --symbol BTCUSDT --days 30
+quant symbols --symbol BTCUSDT
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
+import math
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import typer
+from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
+from quant.backtest.engine import BacktestConfig, BacktestEngine
+from quant.backtest.market import load_market
+from quant.backtest.metrics import compute_metrics, monthly_returns
+from quant.backtest.report import result_payload, save_report
 from quant.config import BINANCE_MARKET_BASE, DEFAULT_INTERVAL, data_root
 from quant.data.binance import INTERVAL_MS, BinanceError, BinanceMarketData
 from quant.data.collector import Collector
@@ -25,6 +32,7 @@ from quant.data.quality import check_bars, describe
 from quant.data.store import latest_open_time, read_bars, write_bars
 from quant.data.stream import WS_MARKET_BASE
 from quant.reporting import line_svg, sparkline
+from quant.strategies import registry
 
 app = typer.Typer(add_completion=False, no_args_is_help=True, help="Crypto quant CLI")
 console = Console()
@@ -314,6 +322,188 @@ def symbols(
         path.parent.mkdir(parents=True, exist_ok=True)
         specs.write_parquet(path)
         console.print(f"saved to [cyan]{path}[/cyan]")
+
+
+@app.command()
+def strategies(
+    as_json: bool = typer.Option(False, "--json", help="machine readable, used by the web UI"),
+) -> None:
+    """List registered strategies and their parameter schemas."""
+    specs = registry.describe_all()
+    if as_json:
+        typer.echo(json.dumps(specs, ensure_ascii=False, indent=2))
+        return
+
+    table = Table(title=f"{len(specs)} registered strategies")
+    table.add_column("name", style="cyan")
+    table.add_column("title")
+    table.add_column("tags")
+    table.add_column("defaults")
+
+    for item in specs:
+        defaults = ", ".join(f"{k}={v}" for k, v in item["defaults"].items())
+        table.add_row(item["name"], item["title"], ", ".join(item["tags"]), defaults)
+
+    console.print(table)
+
+
+def _parse_params(raw: list[str]) -> dict[str, str]:
+    params: dict[str, str] = {}
+    for item in raw:
+        if "=" not in item:
+            raise typer.BadParameter(f"param must look like key=value, got {item!r}")
+        key, value = item.split("=", 1)
+        params[key.strip()] = value.strip()
+    return params
+
+
+def _format_metric(name: str, value: float) -> str:
+    if not math.isfinite(value):
+        return "n/a"
+    percent = {
+        "total_return",
+        "cagr",
+        "max_drawdown",
+        "volatility",
+        "win_rate",
+        "exposure",
+    }
+    if name in percent:
+        return f"{value * 100:.2f}%"
+    if name in {"final_equity", "avg_win", "avg_loss", "fees_paid"}:
+        return f"{value:,.2f}"
+    if name in {"trades", "round_trips"}:
+        return f"{int(value)}"
+    return f"{value:.3f}"
+
+
+@app.command()
+def backtest(
+    strategy: str = typer.Option("ma_cross", "--strategy", help="see `quant strategies`"),
+    symbol: list[str] = typer.Option(["BTCUSDT"], "--symbol", "-s", help="repeatable"),
+    days: int | None = typer.Option(30, "--days", "-d"),
+    start: str | None = typer.Option(None, help="ISO time, overrides --days"),
+    end: str | None = typer.Option(None),
+    interval: str = typer.Option(DEFAULT_INTERVAL, "--interval", "-i"),
+    cash: float = typer.Option(10_000.0, "--cash", help="initial capital in quote currency"),
+    fee_rate: float = typer.Option(0.0005, "--fee-rate", help="0.0005 = 5 bps taker"),
+    slippage_bps: float = typer.Option(2.0, "--slippage-bps"),
+    param: list[str] = typer.Option([], "--param", "-p", help="key=value, repeatable"),
+    out: Path | None = typer.Option(None, "--out", help="report directory"),
+    data_dir: Path | None = typer.Option(None, "--data-dir"),
+    as_json: bool = typer.Option(False, "--json", help="print metrics as JSON"),
+) -> None:
+    """Run a backtest over stored parquet data."""
+    root = (data_dir or data_root()).expanduser().resolve()
+    start_dt, end_dt = _resolve_range(days, start, end)
+
+    try:
+        strategy_obj = registry.build(strategy, _parse_params(param))
+    except KeyError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from exc
+    except ValidationError as exc:
+        console.print(f"[red]invalid parameters:[/red]\n{exc}")
+        raise typer.Exit(code=2) from exc
+
+    market = load_market(symbol, start=start_dt, end=end_dt, root=root, interval=interval)
+    engine = BacktestEngine(
+        market,
+        strategy_obj,
+        BacktestConfig(initial_cash=cash, fee_rate=fee_rate, slippage_bps=slippage_bps),
+    )
+    result = engine.run()
+
+    result.metrics = compute_metrics(
+        result.times, result.equity, result.trades, result.initial_cash
+    )
+    result.metrics["exposure"] = result.exposure
+    result.monthly_returns = monthly_returns(result.times, result.equity, result.initial_cash)
+
+    out_dir = out or (
+        root
+        / "reports"
+        / f"{strategy}_{'-'.join(symbol)}".replace("/", "")
+        / datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    )
+    paths = save_report(result, out_dir)
+
+    if as_json:
+        typer.echo(
+            json.dumps(
+                result_payload(result, out_dir),
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+        )
+        return
+
+    console.print(
+        f"[bold]{result.strategy}[/bold] {', '.join(result.symbols)} "
+        f"{result.times[0]:%Y-%m-%d} → {result.times[-1]:%Y-%m-%d} "
+        f"({result.bars_processed:,} bars)"
+    )
+    console.print(f"params: {result.params}")
+
+    metrics_table = Table(show_header=False, title="metrics")
+    metrics_table.add_column("metric", style="cyan")
+    metrics_table.add_column("value", justify="right")
+    order = [
+        "final_equity",
+        "total_return",
+        "cagr",
+        "sharpe",
+        "sortino",
+        "max_drawdown",
+        "calmar",
+        "volatility",
+        "win_rate",
+        "profit_factor",
+        "trades",
+        "exposure",
+        "turnover",
+        "fees_paid",
+    ]
+    for key in order:
+        if key in result.metrics:
+            metrics_table.add_row(key, _format_metric(key, result.metrics[key]))
+    console.print(metrics_table)
+
+    if result.monthly_returns:
+        monthly = Table(title="monthly returns")
+        for month in ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"]:
+            monthly.add_column(month, justify="right")
+        years: dict[str, dict[str, float]] = {}
+        for key, value in result.monthly_returns.items():
+            year, month = key.split("-")
+            years.setdefault(year, {})[month] = value
+        for year in sorted(years):
+            cells = []
+            for month in [f"{m:02d}" for m in range(1, 13)]:
+                value = years[year].get(month)
+                cells.append("" if value is None else f"{value * 100:+.2f}%")
+            monthly.add_row(*cells)
+        console.print(monthly)
+
+    if result.trades:
+        trades_table = Table(title=f"last {min(8, len(result.trades))} trades")
+        for col in ("time", "side", "qty", "price", "fee", "pnl", "reason"):
+            trades_table.add_column(col, justify="right")
+        for trade in result.trades[-8:]:
+            trades_table.add_row(
+                f"{trade.time:%Y-%m-%d %H:%M}",
+                trade.side,
+                f"{trade.qty:.6f}",
+                f"{trade.price:,.2f}",
+                f"{trade.fee:.2f}",
+                f"{trade.realized_pnl:+,.2f}",
+                trade.reason,
+            )
+        console.print(trades_table)
+
+    console.print(f"report: [cyan]{out_dir}[/cyan]")
+    for kind, path in paths.items():
+        console.print(f"  {kind}: {path.name}", style="dim")
 
 
 def main() -> None:

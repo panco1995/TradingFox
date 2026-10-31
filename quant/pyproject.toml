@@ -11,6 +11,8 @@ dependencies = [
     "rich>=13.7",
     "pytz>=2023.3",
     "websockets>=13.0",
+    "pydantic>=2.7",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]

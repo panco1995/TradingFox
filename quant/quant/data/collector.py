@@ -227,9 +227,7 @@ class Collector:
         ) as ws:
             self.stats.connects += 1
             self.stats.last_message_at = time.monotonic()
-            log.info(
-                "ws connected: symbols=%s interval=%s", ",".join(self.symbols), self.interval
-            )
+            log.info("ws connected: symbols=%s interval=%s", ",".join(self.symbols), self.interval)
 
             # A bar that closed between the REST catch-up and this connection
             # never arrives as a final ws event, so repair the recent tail.
@@ -303,9 +301,7 @@ class Collector:
                 log.info("verify %s: ok (%d bars)", symbol, report.rows)
             else:
                 ok = False
-                log.warning(
-                    "verify %s: FAILED\n%s", symbol, "\n".join(describe(report))
-                )
+                log.warning("verify %s: FAILED\n%s", symbol, "\n".join(describe(report)))
         return ok
 
     async def _verify_loop(self) -> None:

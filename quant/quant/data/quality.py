@@ -58,9 +58,7 @@ def check_bars(df: pl.DataFrame, interval: str = "1m") -> QualityReport:
             pl.col("open_time").shift(1).alias("prev"),
             pl.col("open_time").alias("cur"),
         )
-        .with_columns(
-            ((pl.col("cur") - pl.col("prev")).dt.total_milliseconds()).alias("delta_ms")
-        )
+        .with_columns(((pl.col("cur") - pl.col("prev")).dt.total_milliseconds()).alias("delta_ms"))
         .filter(pl.col("delta_ms") > step)
     )
     report.gaps = [
@@ -94,9 +92,7 @@ def describe(report: QualityReport, max_gaps: int = 5) -> list[str]:
         f"gaps={len(report.gaps)}  missing_bars={report.missing_bars}",
     ]
     for gap in report.gaps[:max_gaps]:
-        lines.append(
-            f"  gap: {gap.after} -> {gap.before}  missing {gap.missing_bars} bars"
-        )
+        lines.append(f"  gap: {gap.after} -> {gap.before}  missing {gap.missing_bars} bars")
     if len(report.gaps) > max_gaps:
         lines.append(f"  ... {len(report.gaps) - max_gaps} more")
     return lines

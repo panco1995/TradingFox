@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>量化交易后台 · 策略回测</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand"><span class="dot"></span> 量化交易后台</div>
+      <nav class="tabs">
+        <span class="tab active">策略回测</span>
+        <span class="tab disabled" title="实盘接入在后续里程碑">实盘（未接入）</span>
+      </nav>
+      <div class="env">TESTNET · UTC</div>
+    </header>
+
+    <main class="layout">
+      <section class="panel form-panel">
+        <div class="panel-head">
+          <h1>运行回测</h1>
+          <p>策略是仓库内的代码插件，这里只能选择与配置参数。</p>
+        </div>
+
+        <form id="backtest-form" novalidate>
+          <div class="field">
+            <label for="strategy">策略</label>
+            <select id="strategy" name="strategy"></select>
+          </div>
+          <p id="strategy-description" class="hint"></p>
+          <div id="strategy-tags" class="tags"></div>
+
+          <fieldset>
+            <legend>策略参数</legend>
+            <div id="params" class="param-grid"></div>
+          </fieldset>
+
+          <fieldset>
+            <legend>行情</legend>
+            <div class="field">
+              <label for="symbols">标的（逗号分隔，最多 10 个）</label>
+              <input id="symbols" name="symbols" value="BTCUSDT" autocomplete="off" spellcheck="false" />
+            </div>
+            <div class="row">
+              <div class="field">
+                <label for="days">回看天数</label>
+                <input id="days" name="days" type="number" value="30" min="1" max="3650" step="1" />
+              </div>
+              <div class="field">
+                <label for="interval">K 线周期</label>
+                <select id="interval" name="interval">
+                  <option value="1m" selected>1 分钟</option>
+                  <option value="5m">5 分钟</option>
+                  <option value="15m">15 分钟</option>
+                  <option value="1h">1 小时</option>
+                  <option value="4h">4 小时</option>
+                  <option value="1d">1 天</option>
+                </select>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>资金与成本</legend>
+            <div class="row">
+              <div class="field">
+                <label for="cash">初始资金 (USDT)</label>
+                <input id="cash" name="cash" type="number" value="10000" min="100" step="100" />
+              </div>
+              <div class="field">
+                <label for="fee">手续费 (bps)</label>
+                <input id="fee" name="fee" type="number" value="5" min="0" max="100" step="0.5" />
+              </div>
+            </div>
+            <div class="field">
+              <label for="slippage">滑点 (bps)</label>
+              <input id="slippage" name="slippage" type="number" value="2" min="0" max="100" step="0.5" />
+            </div>
+            <p class="hint">手续费 5 bps = 0.05%，按 taker 保守估计；买入受单根 K 线 1% 成交量限制。</p>
+          </fieldset>
+
+          <button id="run-button" class="primary" type="submit">运行回测</button>
+          <p class="hint">数据来自本地 Parquet。缺少数据时先运行 <code>make fetch</code>。</p>
+        </form>
+      </section>
+
+      <section class="panel result-panel" id="result-panel" aria-live="polite">
+        <div class="empty" id="empty-state">
+          <div class="empty-icon">∿</div>
+          <p>选择策略并运行回测，绩效、权益曲线与成交记录会显示在这里。</p>
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
