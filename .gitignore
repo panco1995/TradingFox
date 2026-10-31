@@ -1,0 +1,22 @@
+# python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# data & secrets
+data/*
+!data/.gitkeep
+.env
+*.parquet
+
+# go
+backend/bin/
+backend/api
+
+# editors / os
+.DS_Store
+.idea/
+.vscode/

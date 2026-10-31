@@ -1,0 +1,25 @@
+[Unit]
+Description=Quant kline collector (websocket + REST gap repair)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trader
+WorkingDirectory=/srv/trading/quant
+Environment=QUANT_DATA_DIR=/srv/trading/data
+ExecStart=/srv/trading/quant/.venv/bin/python -m quant.cli watch \
+    --symbol BTCUSDT \
+    --symbol ETHUSDT \
+    --verify-every-hours 24
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# basic hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

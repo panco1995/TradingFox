@@ -1,0 +1,11 @@
+[Unit]
+Description=Quant daily data quality check
+
+[Service]
+Type=oneshot
+User=trader
+WorkingDirectory=/srv/trading/quant
+Environment=QUANT_DATA_DIR=/srv/trading/data
+# exits non-zero when gaps / duplicates are found -> systemd marks it failed
+ExecStart=/srv/trading/quant/.venv/bin/python -m quant.cli quality \
+    --symbol BTCUSDT --symbol ETHUSDT --days 1
