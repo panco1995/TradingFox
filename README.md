@@ -116,6 +116,7 @@ Vue 后台 (:5173)  --HTTP/JSON + Cookie-->  Go Gin API (:8080)  --子进程--> 
 | GET | `/api/klines?symbol=BTCUSDT&interval=1m&days=2` | 本地已收盘 K 线（OHLCV），支持 3m/5m/15m/30m/1h/2h/4h/6h/8h/12h/1d/3d/1w/1M |
 | GET | `/api/klines/symbols?interval=1m` | 该周期下已有本地数据的交易对 |
 | GET | `/api/strategies` | 策略列表、`params_schema`、默认值 |
+| GET | `/api/collector?interval=1m` | 采集器运行状态与每个交易对的最后更新时间 |
 | POST | `/api/backtests` | 同步执行回测，返回绩效与曲线 |
 | GET | `/api/backtests?limit=20` | 当前用户最近的回测 |
 | GET | `/api/backtests/:id` | 当前用户的单次回测完整结果 |
@@ -283,6 +284,23 @@ cd quant
 ```bash
 .venv/bin/python -m quant.cli fetch -s BTCUSDT -d 365   # 约 52 万根，几分钟
 ```
+
+## 数据采集状态
+
+后台「数据采集」页面显示采集器健康度和每个交易对的最后更新时间。
+
+采集器是独立进程，Go API 读不到它的内存，所以它每 5 秒重写一次心跳文件
+`data/meta/collector-status.json`。心跳超过 **20 秒**没更新就判定为未运行 —— 这样
+`kill -9` 或断电留下的陈旧文件也不会被误报成「运行中」。
+
+```bash
+cd quant
+.venv/bin/python -m quant.cli status          # 人读
+.venv/bin/python -m quant.cli status --json   # 后台用的契约
+```
+
+页面上的「延迟」是 `当前时间 - 最新一根已收盘 K 线`。1 分钟周期下正常在 1～2 分钟以内；
+超过 3 个周期会标红并提示补数据。未订阅的交易对会单独标灰，但只要有历史数据仍然会列出来。
 
 ## 实时采集器
 

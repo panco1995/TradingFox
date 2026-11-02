@@ -1,6 +1,7 @@
 import type {
   BacktestReport,
   BacktestRequest,
+  CollectorStatus,
   CredentialsInfo,
   KlineResponse,
   KlineSymbols,
@@ -122,6 +123,11 @@ export function getKlines(query: {
 export function getKlineSymbols(interval: string): Promise<KlineSymbols> {
   const params = new URLSearchParams({ interval });
   return request(`/klines/symbols?${params}`);
+}
+
+export function getCollectorStatus(interval = "1m"): Promise<CollectorStatus> {
+  const params = new URLSearchParams({ interval });
+  return request(`/collector?${params}`);
 }
 
 export function getStrategies(): Promise<StrategySpec[]> {

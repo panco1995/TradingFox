@@ -20,6 +20,7 @@ type fakeQuant struct {
 	result      json.RawMessage
 	klines      json.RawMessage
 	symbols     json.RawMessage
+	status      json.RawMessage
 	err         error
 	got         quantcli.BacktestRequest
 	gotKline    quantcli.KlineQuery
@@ -49,6 +50,14 @@ func (f *fakeQuant) KlineSymbols(_ context.Context, interval string) (json.RawMe
 		return f.symbols, f.err
 	}
 	return json.RawMessage(`{"interval":"` + interval + `","symbols":[]}`), f.err
+}
+
+func (f *fakeQuant) CollectorStatus(_ context.Context, interval string) (json.RawMessage, error) {
+	f.gotInterval = interval
+	if f.status != nil {
+		return f.status, f.err
+	}
+	return json.RawMessage(`{"collector":{"running":false},"symbols":[]}`), f.err
 }
 
 func init() {
@@ -106,6 +115,28 @@ func TestKlineSymbolsPassThrough(t *testing.T) {
 	}
 	if fake.gotInterval != "1m" {
 		t.Fatalf("interval = %s", fake.gotInterval)
+	}
+}
+
+func TestCollectorStatusPassThrough(t *testing.T) {
+	fake := &fakeQuant{status: json.RawMessage(`{"collector":{"running":true},"symbols":[]}`)}
+	rec := doRequest(newTestServer(fake).Router(), http.MethodGet, "/api/collector?interval=1m", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body)
+	}
+	if fake.gotInterval != "1m" {
+		t.Fatalf("interval = %s", fake.gotInterval)
+	}
+	if got := strings.TrimSpace(rec.Body.String()); !strings.Contains(got, `"running":true`) {
+		t.Fatalf("body = %s", got)
+	}
+}
+
+func TestCollectorStatusRejectsBadInterval(t *testing.T) {
+	fake := &fakeQuant{}
+	rec := doRequest(newTestServer(fake).Router(), http.MethodGet, "/api/collector?interval=2x", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body)
 	}
 }
 

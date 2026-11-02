@@ -101,6 +101,42 @@ export interface KlineSymbols {
   symbols: string[];
 }
 
+export interface CollectorInfo {
+  running: boolean;
+  state: string | null;
+  heartbeat_at: string | null;
+  heartbeat_age_seconds: number | null;
+  started_at: string | null;
+  pid: number | null;
+  uptime_s: number | null;
+  connects: number | null;
+  messages: number | null;
+  bars_seen: number | null;
+  bars_written: number | null;
+  backfills: number | null;
+  idle_s: number | null;
+  symbols: string[];
+}
+
+export interface SymbolCoverage {
+  symbol: string;
+  bars: number;
+  first: string | null;
+  last: string | null;
+  lag_seconds: number | null;
+  stale: boolean | null;
+  bytes: number;
+  files: number;
+  subscribed: boolean;
+}
+
+export interface CollectorStatus {
+  interval: string;
+  now: string;
+  collector: CollectorInfo;
+  symbols: SymbolCoverage[];
+}
+
 export interface CredentialsInfo {
   exchange: string;
   configured: boolean;

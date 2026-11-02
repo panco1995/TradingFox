@@ -65,6 +65,23 @@ func (s *Server) handleKlineSymbols(c *gin.Context) {
 	c.Data(http.StatusOK, "application/json; charset=utf-8", payload)
 }
 
+func (s *Server) handleCollectorStatus(c *gin.Context) {
+	interval := c.DefaultQuery("interval", "1m")
+	if err := quantcli.ValidateInterval(interval); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	payload, err := s.quant.CollectorStatus(ctx, interval)
+	if err != nil {
+		s.fail(c, "读取采集状态失败", err)
+		return
+	}
+	c.Data(http.StatusOK, "application/json; charset=utf-8", payload)
+}
+
 func parseBoundedInt(raw string, fallback, min, max int) (int, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

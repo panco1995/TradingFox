@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Refresh, TrendCharts } from "@element-plus/icons-vue";
 import { computed, onMounted, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 
 import { getKlineSymbols, getKlines } from "@/api";
 import KlineChart from "@/components/KlineChart.vue";
@@ -29,6 +30,7 @@ const DAY_OPTIONS = [1, 2, 7, 14, 30, 90, 180, 365];
 const symbol = ref("BTCUSDT");
 const interval = ref("1m");
 const days = ref(2);
+const route = useRoute();
 const symbols = ref<string[]>([]);
 const loading = ref(false);
 const errorMessage = ref("");
@@ -73,6 +75,12 @@ const summary = computed(() => {
 
 onMounted(async () => {
   loading.value = true;
+  // The collector page links here with ?symbol=..., so honour it when it names
+  // a symbol we actually have data for.
+  const requested = String(route.query.symbol ?? "")
+    .trim()
+    .toUpperCase();
+  if (requested) symbol.value = requested;
   await refreshSymbols();
   await load();
 });

@@ -29,9 +29,16 @@ from quant.backtest.report import result_payload, save_report
 from quant.config import BINANCE_MARKET_BASE, DEFAULT_INTERVAL, data_root
 from quant.data.binance import INTERVAL_MS, BinanceError, BinanceMarketData
 from quant.data.collector import Collector
+from quant.data.heartbeat import heartbeat_age_seconds, is_running, read_heartbeat
 from quant.data.quality import check_bars, describe
 from quant.data.resample import BASE_INTERVAL, SUPPORTED_INTERVALS, load_bars
-from quant.data.store import latest_open_time, list_symbols, read_bars, write_bars
+from quant.data.store import (
+    latest_open_time,
+    list_symbols,
+    read_bars,
+    symbol_coverage,
+    write_bars,
+)
 from quant.data.stream import WS_MARKET_BASE
 from quant.reporting import line_svg, sparkline
 from quant.strategies import registry
@@ -246,6 +253,96 @@ def watch(
         asyncio.run(collector.run(run_for=run_for or None))
 
     console.print(f"done: {collector.stats.as_dict()}")
+
+
+@app.command()
+def status(
+    data_dir: Path | None = typer.Option(None, "--data-dir"),
+    interval: str = typer.Option(DEFAULT_INTERVAL, "--interval", "-i"),
+    as_json: bool = typer.Option(False, "--json", help="machine readable, used by the web UI"),
+) -> None:
+    """Collector health and per-symbol freshness. The admin UI calls this with --json."""
+    root = (data_dir or data_root()).expanduser().resolve()
+    beat = read_heartbeat(root)
+    running = is_running(beat)
+    age = heartbeat_age_seconds(beat)
+    now = datetime.now(UTC)
+
+    rows = symbol_coverage(root=root, interval=interval)
+    subscribed = set()
+    if isinstance(beat, dict) and isinstance(beat.get("symbols"), list):
+        subscribed = {str(s).upper() for s in beat["symbols"]}
+
+    step = timedelta(milliseconds=INTERVAL_MS.get(interval, 60_000))
+    symbols: list[dict[str, object]] = []
+    for row in rows:
+        last = row["last"]
+        lag = (now - last).total_seconds() if isinstance(last, datetime) else None
+        # A minute-based feed is healthy when the newest closed bar is at most a
+        # couple of intervals old.
+        stale = None if lag is None else lag > step.total_seconds() * 3
+        symbols.append(
+            {
+                "symbol": row["symbol"],
+                "bars": row["bars"],
+                "first": _iso_utc(row["first"]),  # type: ignore[arg-type]
+                "last": _iso_utc(row["last"]),  # type: ignore[arg-type]
+                "lag_seconds": None if lag is None else round(lag, 1),
+                "stale": stale,
+                "bytes": row["bytes"],
+                "files": row["files"],
+                "subscribed": row["symbol"] in subscribed,
+            }
+        )
+
+    payload = {
+        "interval": interval,
+        "now": now.isoformat(),
+        "collector": {
+            "running": running,
+            "state": (beat or {}).get("state"),
+            "heartbeat_at": (beat or {}).get("heartbeat_at"),
+            "heartbeat_age_seconds": None if age is None else round(age, 1),
+            "started_at": (beat or {}).get("started_at"),
+            "pid": (beat or {}).get("pid"),
+            "uptime_s": (beat or {}).get("uptime_s"),
+            "connects": (beat or {}).get("connects"),
+            "messages": (beat or {}).get("messages"),
+            "bars_seen": (beat or {}).get("bars_seen"),
+            "bars_written": (beat or {}).get("bars_written"),
+            "backfills": (beat or {}).get("backfills"),
+            "idle_s": (beat or {}).get("idle_s"),
+            "symbols": sorted(subscribed),
+        },
+        "symbols": symbols,
+    }
+
+    if as_json:
+        typer.echo(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        return
+
+    state = "running" if running else ("stale" if beat else "not started")
+    console.print(f"collector: [bold]{state}[/bold]  interval={interval}  root={root}")
+    if running and age is not None:
+        console.print(
+            f"  heartbeat {age:.0f}s ago  pid={payload['collector']['pid']}  "
+            f"uptime={payload['collector']['uptime_s']}s  "
+            f"symbols={', '.join(payload['collector']['symbols']) or '-'}"  # type: ignore[arg-type]
+        )
+    table = Table(title="symbols")
+    for col in ("symbol", "bars", "first", "last", "lag_s", "bytes"):
+        table.add_column(col, justify="right" if col != "symbol" else "left")
+    for item in symbols:
+        last = item["last"]
+        table.add_row(
+            str(item["symbol"]),
+            f"{item['bars']:,}",  # type: ignore[arg-type]
+            "-" if item["first"] is None else str(item["first"])[:16],  # type: ignore[arg-type]
+            "-" if last is None else str(last)[:16],
+            "-" if item["lag_seconds"] is None else f"{item['lag_seconds']:.0f}",  # type: ignore[arg-type]
+            f"{int(item['bytes']) / 1024 / 1024:.1f}M",  # type: ignore[arg-type]
+        )
+    console.print(table)
 
 
 @app.command()

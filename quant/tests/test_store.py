@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import polars as pl
 
-from quant.data.store import latest_open_time, list_symbols, read_bars, symbol_dir, write_bars
+from quant.data.store import (
+    latest_open_time,
+    list_symbols,
+    read_bars,
+    symbol_coverage,
+    symbol_dir,
+    write_bars,
+)
 
 
 def test_roundtrip(bars_factory, tmp_path):
@@ -82,6 +91,25 @@ def test_latest_and_listing(bars_factory, tmp_path):
     assert latest_open_time("BTCUSDT", root=tmp_path) == df["open_time"].max()
     assert list_symbols(root=tmp_path) == ["BTCUSDT", "ETHUSDT"]
     assert symbol_dir("BTCUSDT", root=tmp_path).exists()
+
+
+def test_symbol_coverage_reports_freshness(bars_factory, tmp_path):
+    write_bars(bars_factory(3), "BTCUSDT", root=tmp_path)
+    write_bars(bars_factory(5), "ETHUSDT", root=tmp_path)
+
+    rows = {row["symbol"]: row for row in symbol_coverage(root=tmp_path)}
+
+    assert set(rows) == {"BTCUSDT", "ETHUSDT"}
+    assert rows["BTCUSDT"]["bars"] == 3
+    assert rows["ETHUSDT"]["bars"] == 5
+    assert rows["BTCUSDT"]["first"] == datetime(2026, 1, 1, tzinfo=UTC)
+    assert rows["BTCUSDT"]["last"] == datetime(2026, 1, 1, 0, 2, tzinfo=UTC)
+    assert rows["BTCUSDT"]["bytes"] > 0
+    assert rows["BTCUSDT"]["files"] == 1
+
+
+def test_symbol_coverage_is_empty_without_data(tmp_path):
+    assert symbol_coverage(root=tmp_path) == []
 
 
 def test_missing_column_rejected(tmp_path):

@@ -207,3 +207,69 @@ def list_symbols(
     if not folder.exists():
         return []
     return sorted(p.name.split("=", 1)[1] for p in folder.glob("symbol=*") if p.is_dir())
+
+
+def symbol_coverage(
+    root: Path | None = None,
+    interval: str = DEFAULT_INTERVAL,
+    exchange: str = DEFAULT_EXCHANGE,
+    market_type: str = DEFAULT_MARKET_TYPE,
+) -> list[dict[str, object]]:
+    """Bars, first/last timestamp and on-disk size for every stored symbol.
+
+    Only the newest and oldest month file are read: a symbol can hold years of
+    monthly partitions, and the admin UI needs freshness, not a full scan.
+    """
+    interval_dir = (
+        (root or data_root())
+        / "raw"
+        / "klines"
+        / f"exchange={exchange}"
+        / f"type={market_type}"
+        / f"interval={interval}"
+    )
+    if not interval_dir.exists():
+        return []
+
+    rows: list[dict[str, object]] = []
+    for folder in sorted(interval_dir.glob("symbol=*")):
+        if not folder.is_dir():
+            continue
+        files = sorted(folder.glob("*.parquet"))
+        if not files:
+            rows.append(
+                {
+                    "symbol": folder.name.split("=", 1)[1],
+                    "bars": 0,
+                    "first": None,
+                    "last": None,
+                    "bytes": 0,
+                    "files": 0,
+                }
+            )
+            continue
+
+        first_df = pl.read_parquet(files[0], columns=["open_time"])
+        last_df = pl.read_parquet(files[-1], columns=["open_time"])
+        first = first_df["open_time"].min() if not first_df.is_empty() else None
+        last = last_df["open_time"].max() if not last_df.is_empty() else None
+
+        bars = 0
+        size = 0
+        for path in files:
+            size += path.stat().st_size
+            # `len()` on a lazy scan is answered from the parquet footer, so
+            # this stays cheap even with years of partitions.
+            bars += pl.scan_parquet(path).select(pl.len()).collect().item()
+
+        rows.append(
+            {
+                "symbol": folder.name.split("=", 1)[1],
+                "bars": bars,
+                "first": first,
+                "last": last,
+                "bytes": size,
+                "files": len(files),
+            }
+        )
+    return rows

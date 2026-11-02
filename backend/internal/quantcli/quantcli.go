@@ -295,6 +295,25 @@ func (c *Client) KlineSymbols(ctx context.Context, interval string) (json.RawMes
 	return json.RawMessage(out), nil
 }
 
+// Collector status is read from the Python CLI rather than tracked in Go: the
+// collector is a separate process, so only it knows whether it is alive.
+func (c *Client) CollectorStatus(ctx context.Context, interval string) (json.RawMessage, error) {
+	if interval == "" {
+		interval = "1m"
+	}
+	if err := ValidateInterval(interval); err != nil {
+		return nil, &Error{Message: err.Error(), ExitCode: 2}
+	}
+	out, err := c.run(ctx, "status", "--interval", interval, "--json")
+	if err != nil {
+		return nil, err
+	}
+	if !json.Valid(out) {
+		return nil, errors.New("python CLI returned malformed JSON for collector status")
+	}
+	return json.RawMessage(out), nil
+}
+
 func scalarString(value any) string {
 	switch v := value.(type) {
 	case string:

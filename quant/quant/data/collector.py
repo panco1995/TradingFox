@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import random
 import signal
 import time
@@ -29,6 +30,7 @@ import websockets
 
 from quant.config import BINANCE_MARKET_BASE
 from quant.data.binance import BAR_SCHEMA, INTERVAL_MS, BinanceMarketData
+from quant.data.heartbeat import DEFAULT_HEARTBEAT_SECONDS, write_heartbeat
 from quant.data.quality import check_bars, describe
 from quant.data.store import latest_open_time, read_bars, write_bars
 from quant.data.stream import WS_MARKET_BASE, KlineBar, parse_kline, stream_url
@@ -94,6 +96,7 @@ class Collector:
         repair_window_minutes: float = 120.0,
         verify_every_hours: float = 0.0,
         verify_days: int = 1,
+        heartbeat_seconds: float = DEFAULT_HEARTBEAT_SECONDS,
     ) -> None:
         if interval not in INTERVAL_MS:
             raise ValueError(f"unsupported interval: {interval}")
@@ -116,6 +119,8 @@ class Collector:
         self._buffer: dict[str, list[dict[str, object]]] = {s: [] for s in self.symbols}
         self._last_flush = time.monotonic()
         self._last_stats_log = time.monotonic()
+        self.heartbeat_seconds = heartbeat_seconds
+        self._last_heartbeat = 0.0
         self._stop = False
 
     # ------------------------------------------------------------------ state
@@ -127,6 +132,41 @@ class Collector:
     def request_stop(self) -> None:
         log.info("stop requested")
         self._stop = True
+
+    # --------------------------------------------------------------- heartbeat
+
+    def heartbeat_payload(self, state: str = "running") -> dict[str, object]:
+        now = datetime.now(UTC)
+        stats = self.stats.as_dict()
+        return {
+            "state": state,
+            "heartbeat_at": now.isoformat(),
+            "started_at": datetime.fromtimestamp(self.stats.started_at, tz=UTC).isoformat(),
+            "pid": os.getpid(),
+            "interval": self.interval,
+            "symbols": self.symbols,
+            "uptime_s": stats["uptime_s"],
+            "connects": stats["connects"],
+            "messages": stats["messages"],
+            "bars_seen": stats["bars_seen"],
+            "bars_written": stats["bars_written"],
+            "backfills": stats["backfills"],
+            "idle_s": stats["idle_s"],
+            "pending_bars": self.pending(),
+        }
+
+    def write_heartbeat(self, state: str = "running") -> None:
+        """Publish status for the admin UI. Never raises: a read-only data
+        directory must not take the collector down."""
+        try:
+            write_heartbeat(self.heartbeat_payload(state), root=self.root)
+        except OSError as exc:
+            log.debug("heartbeat write failed: %s", exc)
+        self._last_heartbeat = time.monotonic()
+
+    def _maybe_heartbeat(self) -> None:
+        if time.monotonic() - self._last_heartbeat >= self.heartbeat_seconds:
+            self.write_heartbeat()
 
     # ------------------------------------------------------- message handling
 
@@ -258,6 +298,7 @@ class Collector:
                             )
                         await self._maybe_flush()
                         await self._maybe_log_stats()
+                        self._maybe_heartbeat()
                         continue
 
                     raw = recv_task.result()
@@ -275,6 +316,7 @@ class Collector:
                     self.handle_message(message)
                     await self._maybe_flush()
                     await self._maybe_log_stats()
+                    self._maybe_heartbeat()
             finally:
                 recv_task.cancel()
 
@@ -326,6 +368,7 @@ class Collector:
         if self.verify_every_hours > 0:
             verify_task = asyncio.create_task(self._verify_loop())
 
+        self.write_heartbeat()
         try:
             while not self._stop:
                 if deadline is not None and time.monotonic() >= deadline:
@@ -346,6 +389,7 @@ class Collector:
             if verify_task is not None:
                 verify_task.cancel()
             await asyncio.to_thread(self.flush)
+            self.write_heartbeat("stopped")
             log.info("collector stopped, stats %s", self.stats.as_dict())
 
     def _install_signal_handlers(self) -> None:

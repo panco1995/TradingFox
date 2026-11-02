@@ -29,6 +29,12 @@ const router = createRouter({
           meta: { title: "K 线" },
         },
         {
+          path: "collector",
+          name: "collector",
+          component: () => import("@/views/CollectorView.vue"),
+          meta: { title: "数据采集" },
+        },
+        {
           path: "strategies",
           name: "strategies",
           component: () => import("@/views/StrategiesView.vue"),

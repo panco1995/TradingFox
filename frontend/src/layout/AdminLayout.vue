@@ -3,6 +3,7 @@ import {
   Collection,
   DataAnalysis,
   Key,
+  Monitor,
   SwitchButton,
   TrendCharts,
   User,
@@ -69,6 +70,10 @@ async function onCommand(command: Command) {
         <el-menu-item index="/klines">
           <el-icon><TrendCharts /></el-icon>
           <span>K 线</span>
+        </el-menu-item>
+        <el-menu-item index="/collector">
+          <el-icon><Monitor /></el-icon>
+          <span>数据采集</span>
         </el-menu-item>
         <el-menu-item index="/strategies">
           <el-icon><Collection /></el-icon>

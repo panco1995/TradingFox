@@ -38,6 +38,7 @@ type Quant interface {
 	Backtest(ctx context.Context, req quantcli.BacktestRequest) (json.RawMessage, error)
 	Klines(ctx context.Context, query quantcli.KlineQuery) (json.RawMessage, error)
 	KlineSymbols(ctx context.Context, interval string) (json.RawMessage, error)
+	CollectorStatus(ctx context.Context, interval string) (json.RawMessage, error)
 }
 
 // UserStore is the user persistence the handlers need.
@@ -118,6 +119,7 @@ func (s *Server) Router() *gin.Engine {
 	secured.GET("/strategies", s.handleStrategies)
 	secured.GET("/klines/symbols", s.handleKlineSymbols)
 	secured.GET("/klines", s.handleKlines)
+	secured.GET("/collector", s.handleCollectorStatus)
 	secured.POST("/backtests", s.handleBacktest)
 	secured.GET("/backtests", s.handleListRuns)
 	secured.GET("/backtests/:id", s.handleGetRun)
