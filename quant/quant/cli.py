@@ -63,7 +63,9 @@ def _align_to_interval(dt: datetime, interval: str) -> datetime:
     """Floor a timestamp onto the bar boundary, so the first fetched bar is whole."""
     step = INTERVAL_MS[interval]
     ms = int(dt.timestamp() * 1000)
-    return datetime.fromtimestamp(ms - ms % step, tz=UTC)
+    aligned_ms = ms - ms % step
+    # fromtimestamp takes seconds; aligned_ms is still epoch milliseconds.
+    return datetime.fromtimestamp(aligned_ms // 1000, tz=UTC)
 
 
 def _safe_segment(value: str) -> str:
