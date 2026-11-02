@@ -23,7 +23,7 @@ class MACrossParams(BaseModel):
     @model_validator(mode="after")
     def _check_windows(self) -> MACrossParams:
         if self.fast >= self.slow:
-            raise ValueError("fast must be smaller than slow")
+            raise ValueError("快线周期必须小于慢线周期")
         return self
 
 

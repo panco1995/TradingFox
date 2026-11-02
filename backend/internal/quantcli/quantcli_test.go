@@ -1,7 +1,9 @@
 package quantcli
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -86,5 +88,43 @@ func TestScalarString(t *testing.T) {
 		if got := scalarString(input); got != want {
 			t.Fatalf("scalarString(%v) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+// A python crash writes to stderr; that text is what the UI shows.
+func TestFailureMessagePrefersStderr(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	stdout.WriteString(`{"error": "from stdout"}`)
+	stderr.WriteString("参数不合法：快线周期必须小于慢线周期\n")
+
+	got := failureMessage(&stdout, &stderr, errors.New("exit status 2"))
+
+	if got != "参数不合法：快线周期必须小于慢线周期" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// Without the stdout fallback the user would only see "exit status 2", which
+// says nothing about which parameter is wrong.
+func TestFailureMessageFallsBackToJSONEnvelope(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	stdout.WriteString(`{"error": "参数不合法：退出周期必须小于突破周期"}`)
+
+	got := failureMessage(&stdout, &stderr, errors.New("exit status 2"))
+
+	if got != "参数不合法：退出周期必须小于突破周期" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// Anything is better than an empty message in the error banner.
+func TestFailureMessageLastResortIsTheRawError(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	stdout.WriteString("not json")
+
+	got := failureMessage(&stdout, &stderr, errors.New("exit status 2"))
+
+	if got != "exit status 2" {
+		t.Fatalf("got %q", got)
 	}
 }

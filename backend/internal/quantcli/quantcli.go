@@ -184,13 +184,31 @@ func (c *Client) run(ctx context.Context, args ...string) ([]byte, error) {
 		if errors.As(err, &exitErr) {
 			code = exitErr.ExitCode()
 		}
-		message := strings.TrimSpace(stderr.String())
-		if message == "" {
-			message = err.Error()
+		return nil, &Error{
+			Message:  failureMessage(&stdout, &stderr, err),
+			Stderr:   stderr.String(),
+			ExitCode: code,
 		}
-		return nil, &Error{Message: message, Stderr: stderr.String(), ExitCode: code}
 	}
 	return stdout.Bytes(), nil
+}
+
+// failureMessage picks the most useful text to show the user.
+//
+// The CLI is expected to write failures to stderr, but if it ever forgets, the
+// bare "exit status 2" is worse than useless in the web UI. Two fallbacks:
+// the JSON envelope some commands emit on stdout, then the raw error.
+func failureMessage(stdout, stderr *bytes.Buffer, err error) string {
+	if message := strings.TrimSpace(stderr.String()); message != "" {
+		return message
+	}
+	var envelope struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &envelope) == nil && envelope.Error != "" {
+		return envelope.Error
+	}
+	return err.Error()
 }
 
 // Strategies returns the raw JSON array emitted by `quant strategies --json`.

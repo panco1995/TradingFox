@@ -75,6 +75,9 @@ Vue 后台 (:5173)  --HTTP/JSON + Cookie-->  Go Gin API (:8080)  --子进程--> 
 - Go 只做业务 API。策略发现、参数校验、回测都在 Python，避免两套规则。
 - 当前 Go → Python 用 `python -m quant.cli ... --json` 子进程调用，参数用 argv 传递，不过 shell。
   后续替换成 gRPC 时，HTTP 契约保持不变。
+- **CLI 的错误一律写 stderr**，退出码 `2` 表示请求本身不合法（参数、标的），`1` 表示执行失败（无数据、交易所错误）。
+  Go 只把 stderr 当作要展示给用户的消息，所以错误绝不能走 `console.print`（那是 stdout）——否则后台只能拿到
+  `exit status 2` 这种空话。`--json` 模式还会在 stdout 输出 `{"error": "..."}` 作为兜底。
 - CORS 由 `CORS_ORIGINS` 控制，默认只允许 `http://localhost:5173` 与 `http://127.0.0.1:5173`。
 - 登录态是 HttpOnly Cookie（`trading_session`，默认 7 天）。开发时走 Vite 代理，生产走 nginx 同源反代，
   因此 Cookie 不需要跨站。

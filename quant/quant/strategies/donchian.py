@@ -16,7 +16,7 @@ class DonchianParams(BaseModel):
     @model_validator(mode="after")
     def _check_windows(self) -> DonchianParams:
         if self.exit_window >= self.entry_window:
-            raise ValueError("exit_window must be smaller than entry_window")
+            raise ValueError("退出周期必须小于突破周期")
         return self
 
 

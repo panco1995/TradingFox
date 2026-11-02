@@ -15,6 +15,7 @@ import logging
 import math
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import NoReturn
 
 import polars as pl
 import typer
@@ -49,6 +50,64 @@ from quant.strategies import registry
 
 app = typer.Typer(add_completion=False, no_args_is_help=True, help="Crypto quant CLI")
 console = Console()
+# Errors must go to stderr: the Go API uses stderr as the message it shows in
+# the web UI, and a bare `console.print` would write to stdout instead.
+error_console = Console(stderr=True)
+
+
+def _fail(message: str, *, code: int = 2, as_json: bool = False) -> NoReturn:
+    """Report a user-facing failure and exit with `code`.
+
+    Two audiences share one call site: a human reading the terminal and the Go
+    API parsing `--json` output. The message always goes to stderr so the
+    caller never has to fall back to the useless "exit status 2", and in JSON
+    mode a machine-readable envelope is also emitted on stdout.
+    """
+    if as_json:
+        typer.echo(json.dumps({"error": message}, ensure_ascii=False))
+    error_console.print(message, style="red")
+    raise typer.Exit(code=code)
+
+
+#: pydantic error types the UI can hit, translated into something a trader
+#: reading the backtest page can act on.
+_PARAM_HINTS = {
+    "int_parsing": "需要整数",
+    "int_type": "需要整数",
+    "float_parsing": "需要数字",
+    "float_type": "需要数字",
+    "bool_parsing": "需要布尔值",
+    "string_type": "需要文本",
+    "missing": "必填",
+    "greater_than": "低于允许范围",
+    "less_than": "超出允许范围",
+}
+
+
+def _describe_validation(exc: ValidationError) -> str:
+    """Flatten a pydantic error into one line: which field, and why.
+
+    The raw dump names the internal model class and links to pydantic's docs,
+    which is noise for someone who just typed a bad window size.
+    """
+    parts: list[str] = []
+    for item in exc.errors():
+        field = ".".join(str(part) for part in item["loc"])
+        kind = item["type"]
+        if kind == "value_error":
+            # A model-level validator (e.g. "exit_window must be smaller than
+            # entry_window") already names the fields itself.
+            detail = str(item.get("ctx", {}).get("error") or item["msg"])
+            parts.append(detail)
+            continue
+        if kind == "less_than_equal":
+            detail = f"不能大于 {item.get('ctx', {}).get('le')}"
+        elif kind == "greater_than_equal":
+            detail = f"不能小于 {item.get('ctx', {}).get('ge')}"
+        else:
+            detail = _PARAM_HINTS.get(kind, item["msg"])
+        parts.append(f"{field or '参数'} {detail}".strip())
+    return "参数不合法：" + "；".join(parts)
 
 
 def _parse_time(value: str | None) -> datetime | None:
@@ -261,11 +320,14 @@ def backfill(
 
     if as_json:
         typer.echo(json.dumps(result.as_dict(), ensure_ascii=False))
-    elif result.error:
-        console.print(f"[red]{result.symbol}: {result.error}[/red]")
+
+    if result.error:
+        # stderr, not the JSON on stdout: the Go API only reads stderr as the
+        # failure message, and an empty one degrades to "exit status 1".
+        error_console.print(f"{result.symbol}: {result.error}", style="red")
     elif result.skipped:
         console.print(f"[green]{result.symbol}[/green] already complete, nothing to do")
-    else:
+    elif not as_json:
         console.print(
             f"[green]{result.symbol}[/green] added={result.rows_added} "
             f"updated={result.rows_updated} spans={result.spans_done}"
@@ -367,11 +429,7 @@ def subscriptions(
             record = None
             message = ""
     except ValueError as exc:
-        if as_json:
-            typer.echo(json.dumps({"error": str(exc)}, ensure_ascii=False))
-        else:
-            console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=2) from exc
+        _fail(str(exc), as_json=as_json)
 
     symbols = read_subscriptions(root)
     payload: dict[str, object] = {
@@ -782,13 +840,18 @@ def backtest(
     try:
         strategy_obj = registry.build(strategy, _parse_params(param))
     except KeyError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=2) from exc
+        # KeyError's str() wraps the message in repr quotes, which reads like a
+        # crash rather than "you picked a strategy that does not exist".
+        _fail(str(exc.args[0]) if exc.args else str(exc), as_json=as_json)
     except ValidationError as exc:
-        console.print(f"[red]invalid parameters:[/red]\n{exc}")
-        raise typer.Exit(code=2) from exc
+        _fail(_describe_validation(exc), as_json=as_json)
 
-    market = load_market(symbol, start=start_dt, end=end_dt, root=root, interval=interval)
+    try:
+        market = load_market(symbol, start=start_dt, end=end_dt, root=root, interval=interval)
+    except ValueError as exc:
+        # Missing parquet, empty interval or disjoint timestamps: the request
+        # is answerable, the local data just is not there yet.
+        _fail(str(exc), code=1, as_json=as_json)
     engine = BacktestEngine(
         market,
         strategy_obj,
@@ -893,7 +956,7 @@ def main() -> None:
     try:
         app()
     except BinanceError as exc:
-        console.print(f"[red]exchange error:[/red] {exc}")
+        error_console.print(f"exchange error: {exc}", style="red")
         raise typer.Exit(code=1) from exc
 
 
