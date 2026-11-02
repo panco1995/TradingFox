@@ -52,7 +52,8 @@
 - 频率：**1 分钟 K 线**
 - 策略：**1 个**（建议双均线 + ATR 止损，规则简单、可解释）
 - 环境：**先 testnet，跑通后才小额实盘**
-- Web：登录、策略启停与参数、订单/持仓/成交查询、回测报告、告警列表（5 个页面）
+- Web：登录 / 首次创建管理员、策略回测、策略库、账户设置（Binance Key）、用户管理（管理员）——已可用；
+  后续再加策略实例启停、订单/持仓/成交查询、告警列表
 - 监控：Grafana + Prometheus 基础面板
 
 ### ❌ 明确不做（V2 再说）
@@ -61,7 +62,7 @@
 - 多交易所
 - tick / 盘口 / 高频
 - 机器学习、因子库、组合优化
-- 多用户 / 多租户 / 复杂 RBAC（就一个账号，加个密码就行）
+- 复杂 RBAC / 组织 / 计费（V1 只做 `admin` / `user` 两种角色 + 每个用户独立 Binance Key）
 - 移动端
 - 自动参数寻优平台（先手工跑几组）
 
@@ -253,9 +254,9 @@ decisions(id, strategy_id, symbol, bar_open_time, signal, target_qty,
 
 | 周 | 任务 | 产出 |
 |---|---|---|
-| W14 | Go API：JWT 登录、策略 CRUD、启停、订单/持仓查询 | Postman 全通 |
+| W14 | Go API：JWT 登录、用户/角色、策略 CRUD、启停、订单/持仓查询 | Postman 全通 |
 | W14 | Prometheus metrics + Grafana 看板（权益、订单数、延迟、错误率） | 一张能看懂的监控图 |
-| W15 | 前端 5 个页面：登录 / 仪表盘 / 策略 / 订单持仓 / 回测报告 | 能用，不求好看 |
+| W15 | 前端 5 个页面：登录 / 回测 / 策略库 / 账户设置 / 用户管理 | 能用，不求好看 |
 | W16 | WebSocket 实时推送 + 告警中心 | 订单变化 2s 内出现在页面上 |
 
 **里程碑 M4**：从浏览器完成"改参数 → 重启策略 → 看到订单"，全程不登服务器。
@@ -289,13 +290,18 @@ trading/
 │   └── decisions/               # ADR：每做一个技术决定记一条
 ├── proto/                       # agent.proto
 ├── deploy/
-│   ├── docker-compose.yml
-│   ├── prometheus/
-│   └── grafana/
+│   ├── systemd/                  # trading-api / quant-collector / quant-quality
+│   └── mysql/init/               # 初始化 SQL（可选）
+├── docker-compose.yml            # MySQL + Redis
 ├── backend/                     # Go
 │   ├── cmd/api/main.go
-│   ├── internal/{auth,strategy,order,position,backtest,risk,ws,agent,metrics}
-│   └── sqlc/
+│   └── internal/
+│       ├── api/                 # Gin 路由、CORS、回测/用户/凭据 handler
+│       ├── auth/                # bcrypt、JWT、Cookie 中间件
+│       ├── store/               # MySQL 访问与自动建表
+│       ├── secretbox/           # AES-256-GCM 加密 API Key
+│       ├── quantcli/            # 调用 Python CLI
+│       └── {strategy,order,position,risk,ws,agent,metrics}/   # 后续
 ├── quant/                       # Python
 │   ├── quant/
 │   │   ├── core/                # Event, Context, Clock, Symbol, 枚举
@@ -305,7 +311,13 @@ trading/
 │   │   ├── strategies/ma_cross/
 │   │   └── agent/               # grpc client, heartbeat, runner
 │   └── tests/
-├── web/                         # 前端
+├── frontend/                    # Vue 3 管理后台（独立工程）
+│   └── src/
+│       ├── api.ts               # fetch 封装 + 401 处理
+│       ├── stores/auth.ts       # Pinia 登录态
+│       ├── router/index.ts      # 登录页、路由守卫、角色限制
+│       ├── layout/AdminLayout.vue
+│       └── views/               # Login / Backtest / Strategies / Account / Users
 ├── ops/                         # 回填、校验、对账脚本
 └── data/                        # 挂载卷（不进 git）
 ```
@@ -317,10 +329,10 @@ trading/
 | 项 | 选择 | 理由 |
 |---|---|---|
 | 交易所 | Binance 现货（testnet 优先） | 流动性最好、文档全、测试网完善 |
-| Python | 3.11 + uv + pydantic v2 + polars + duckdb | 快、省心 |
+| Python | 3.13 + venv + pydantic v2 + polars + duckdb | 快、省心 |
 | 交易所对接 | `aiohttp` 原生 REST + `websockets` 原生 WS | 比 ccxt 少一层抽象，报错信息更直接；crypto 只有一家交易所时没必要用统一层 |
-| Go | gin + sqlc + zap + `google.golang.org/grpc` | 类型安全、够快 |
-| 前端 | Vue3 或 React + Vite + ECharts | 页面少，用熟的那个 |
+| Go | gin + slog + `go-sql-driver/mysql` + JWT | 类型安全、够快、依赖少 |
+| 前端 | Vue 3 + Vite + TypeScript + Element Plus + ECharts + Pinia | 页面少，组件现成，前后端分离 |
 | 存储 | MySQL 8（业务）+ Parquet/DuckDB（行情） | 零运维 |
 | 消息 | Redis Stream | 已有 Redis，够用 |
 | 监控 | Prometheus + Grafana + Loki | 免费，省一周开发 |

@@ -66,6 +66,12 @@ def _align_to_interval(dt: datetime, interval: str) -> datetime:
     return datetime.fromtimestamp(ms - ms % step, tz=UTC)
 
 
+def _safe_segment(value: str) -> str:
+    """Keep report grouping to a single, filesystem-safe path segment."""
+    cleaned = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in value.strip())
+    return "" if cleaned in {"", ".", ".."} else cleaned
+
+
 def _setup_logging(verbose: bool) -> None:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     logging.getLogger("quant").setLevel(logging.DEBUG if verbose else logging.INFO)
@@ -390,6 +396,9 @@ def backtest(
     slippage_bps: float = typer.Option(2.0, "--slippage-bps"),
     param: list[str] = typer.Option([], "--param", "-p", help="key=value, repeatable"),
     out: Path | None = typer.Option(None, "--out", help="report directory"),
+    report_group: str = typer.Option(
+        "", "--report-group", help="group reports under reports/<group>/"
+    ),
     data_dir: Path | None = typer.Option(None, "--data-dir"),
     as_json: bool = typer.Option(False, "--json", help="print metrics as JSON"),
 ) -> None:
@@ -423,6 +432,7 @@ def backtest(
     out_dir = out or (
         root
         / "reports"
+        / (_safe_segment(report_group) or "")
         / f"{strategy}_{'-'.join(symbol)}".replace("/", "")
         / datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     )

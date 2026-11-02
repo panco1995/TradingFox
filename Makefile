@@ -2,11 +2,19 @@
 PYTHON ?= python3.13
 PY := quant/.venv/bin/python
 PIP := quant/.venv/bin/pip
+NPM := npm --prefix frontend
 
-.PHONY: help up down logs ps venv install test lint fmt fetch inspect quality api build-api
+.PHONY: help up down logs ps secrets venv install test lint fmt fetch inspect quality \
+	build-api api test-api test-web web-install web-dev web-build check
 
 help:  ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+
+secrets:  ## generate AUTH_SECRET / CREDENTIALS_KEY into .env (once)
+	@test -f .env || cp .env.example .env
+	@grep -q '^AUTH_SECRET=.' .env || printf 'AUTH_SECRET=%s\n' "$$(openssl rand -base64 32)" >> .env
+	@grep -q '^CREDENTIALS_KEY=.' .env || printf 'CREDENTIALS_KEY=%s\n' "$$(openssl rand -base64 32)" >> .env
+	@echo "secrets written to .env"
 
 up:  ## start mysql + redis
 	docker compose up -d
@@ -29,7 +37,7 @@ test:  ## run python tests
 	cd quant && .venv/bin/python -m pytest -q
 
 lint:  ## lint python code
-	cd quant && .venv/bin/ruff check .
+	cd quant && .venv/bin/ruff check . && .venv/bin/ruff format --check .
 
 fmt:  ## auto-format python code
 	cd quant && .venv/bin/ruff check --fix . && .venv/bin/ruff format .
@@ -50,4 +58,21 @@ build-api:  ## build the go api
 	cd backend && go build -o bin/api ./cmd/api
 
 api:  ## run the go api on :8080
-	cd backend && go run ./cmd/api
+	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; cd backend && go run ./cmd/api
+
+test-api:  ## vet + test the go api
+	cd backend && go vet ./... && go test ./...
+
+web-install:  ## install frontend deps
+	$(NPM) install
+
+web-dev:  ## run the vue dev server on :5173
+	$(NPM) run dev
+
+web-build:  ## build the vue app into frontend/dist
+	$(NPM) run build
+
+test-web:  ## typecheck the vue app
+	$(NPM) run typecheck
+
+check: test lint test-api test-web  ## run every check

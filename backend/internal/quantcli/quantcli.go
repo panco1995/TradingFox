@@ -52,6 +52,10 @@ type BacktestRequest struct {
 	FeeRate     float64        `json:"fee_rate"`
 	SlippageBps float64        `json:"slippage_bps"`
 	Params      map[string]any `json:"params"`
+
+	// ReportGroup partitions reports on disk (e.g. "user_7"). It is internal
+	// and must never be accepted from the request body.
+	ReportGroup string `json:"-"`
 }
 
 var symbolPattern = regexp.MustCompile(`^[A-Z0-9]{5,20}$`)
@@ -179,6 +183,9 @@ func (c *Client) Backtest(ctx context.Context, req BacktestRequest) (json.RawMes
 	)
 	for key, value := range req.Params {
 		args = append(args, "--param", key+"="+scalarString(value))
+	}
+	if req.ReportGroup != "" {
+		args = append(args, "--report-group", req.ReportGroup)
 	}
 	args = append(args, "--json")
 

@@ -1,0 +1,22 @@
+[Unit]
+Description=Trading platform Go API (Gin)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trader
+WorkingDirectory=/srv/trading
+EnvironmentFile=/srv/trading/.env
+Environment=GIN_MODE=release
+ExecStart=/srv/trading/backend/bin/api
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -80,6 +80,9 @@ Web 后台  →  Go 后端  →  MySQL / Redis
 
 ## 3. 技术选型
 
+> 本节是**通用备选**，用于解释取舍。本仓库 V1 的实际选择以 [`PLAN_V1.md`](./PLAN_V1.md) §8 为准
+> （Vue 3 + Element Plus、gin + slog + `database/sql`、Parquet + DuckDB 等）。
+
 | 层 | 推荐 | 备选 / 说明 |
 |---|---|---|
 | Web 前端 | React + TS + Vite + Ant Design + ECharts / lightweight-charts | Vue3 亦可；图表别自己写 |
@@ -230,18 +233,18 @@ hb:agent:{agent_id}           # 心跳，TTL 15s
 
 ## 6. 目录结构建议
 
+> 下面是**通用目标结构**。当前仓库已落地的部分见 [`PLAN_V1.md`](./PLAN_V1.md) §7。
+
 ```
 trading/
 ├── docs/                     # 本计划、API 契约、schema 变更记录
 ├── proto/                    # 控制面 protobuf（Go + Python 共同生成）
 ├── deploy/
-│   ├── docker-compose.yml    # mysql/redis/clickhouse/minio/grafana
-│   └── migrations/           # SQL 迁移（golang-migrate，单一来源）
+│   └── docker-compose.yml    # mysql/redis；后续再加 clickhouse/minio/grafana
 ├── backend/                  # Go
 │   ├── cmd/api/
-│   ├── internal/{auth,strategy,order,position,backtest,risk,ws,agent}
-│   ├── sqlc/
-│   └── pkg/
+│   ├── internal/{api,auth,store,secretbox,quantcli}   # 已实现
+│   └── internal/{strategy,order,position,risk,ws,agent,metrics}   # 后续
 ├── quant/                    # Python
 │   ├── pyproject.toml
 │   ├── quant/
@@ -252,7 +255,7 @@ trading/
 │   │   ├── strategies/       # 每个策略独立包 + params schema
 │   │   └── agent/            # gRPC client, 心跳, 任务循环
 │   └── tests/
-├── web/                      # 前端
+├── frontend/                 # Vue 3 管理后台（独立工程）
 └── ops/                      # 回放、对账、数据修复脚本
 ```
 
@@ -261,7 +264,7 @@ trading/
 ## 7. 分阶段计划
 
 > 以**单人全职**估算。团队 2–3 人可并行压缩约 40%。
-> MVP 定义：**单市场 + 单账户 + 1~2 个策略 + 分钟级频率**。先窄后宽，别一上来做多市场多策略。
+> MVP 定义：**单市场 + 多用户独立账户 + 1~2 个策略 + 分钟级频率**。先窄后宽，别一上来做多市场多策略。
 
 ### Phase 0 — 需求与约束确认（3–5 天）
 
@@ -284,7 +287,7 @@ trading/
 - Python 骨架：uv、pydantic 配置、日志、基础 CLI
 - proto 目录 + 生成脚本（Go/Python 双向 codegen）
 
-**验收**：`make up` 一键起全栈；`/healthz` 返回所有依赖状态；CI 绿。
+**验收**：`make up` 一键起全栈；`/api/health` 返回服务与版本；CI 绿。
 
 ### Phase 2 — 行情数据链路（2 周）
 

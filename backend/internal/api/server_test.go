@@ -1,4 +1,4 @@
-package httpapi
+package api
 
 import (
 	"context"
@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 
 	"github.com/tm00013/trading/backend/internal/quantcli"
 )
@@ -29,8 +31,14 @@ func (f *fakeQuant) Backtest(_ context.Context, req quantcli.BacktestRequest) (j
 	return f.result, f.err
 }
 
+func init() {
+	gin.SetMode(gin.TestMode)
+}
+
 func newTestServer(quant Quant) *Server {
-	return New(quant, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return New(quant, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{
+		AllowedOrigins: []string{"http://localhost:5173"},
+	})
 }
 
 func doRequest(handler http.Handler, method, path, body string) *httptest.ResponseRecorder {
@@ -42,7 +50,7 @@ func doRequest(handler http.Handler, method, path, body string) *httptest.Respon
 }
 
 func TestHealth(t *testing.T) {
-	rec := doRequest(newTestServer(&fakeQuant{}).Handler(), http.MethodGet, "/api/health", "")
+	rec := doRequest(newTestServer(&fakeQuant{}).Router(), http.MethodGet, "/api/health", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
@@ -57,7 +65,7 @@ func TestHealth(t *testing.T) {
 
 func TestStrategiesPassThrough(t *testing.T) {
 	fake := &fakeQuant{strategies: json.RawMessage(`[{"name":"ma_cross"}]`)}
-	rec := doRequest(newTestServer(fake).Handler(), http.MethodGet, "/api/strategies", "")
+	rec := doRequest(newTestServer(fake).Router(), http.MethodGet, "/api/strategies", "")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body)
@@ -78,7 +86,7 @@ func TestBacktestDecodesParams(t *testing.T) {
 		"slippage_bps": 2,
 		"params": {"fast": 10, "slow": 30, "target": 0.5, "flag": true}
 	}`
-	rec := doRequest(newTestServer(fake).Handler(), http.MethodPost, "/api/backtests", body)
+	rec := doRequest(newTestServer(fake).Router(), http.MethodPost, "/api/backtests", body)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body)
@@ -96,7 +104,7 @@ func TestBacktestDecodesParams(t *testing.T) {
 }
 
 func TestBacktestRejectsUnknownField(t *testing.T) {
-	rec := doRequest(newTestServer(&fakeQuant{}).Handler(), http.MethodPost, "/api/backtests",
+	rec := doRequest(newTestServer(&fakeQuant{}).Router(), http.MethodPost, "/api/backtests",
 		`{"strategy":"ma_cross","symbols":["BTCUSDT"],"bonus":1}`)
 
 	if rec.Code != http.StatusBadRequest {
@@ -105,7 +113,7 @@ func TestBacktestRejectsUnknownField(t *testing.T) {
 }
 
 func TestBacktestRejectsMalformedJSON(t *testing.T) {
-	rec := doRequest(newTestServer(&fakeQuant{}).Handler(), http.MethodPost, "/api/backtests", `{`)
+	rec := doRequest(newTestServer(&fakeQuant{}).Router(), http.MethodPost, "/api/backtests", `{`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d", rec.Code)
 	}
@@ -113,7 +121,7 @@ func TestBacktestRejectsMalformedJSON(t *testing.T) {
 
 func TestBacktestMapsCLIValidationErrorTo400(t *testing.T) {
 	fake := &fakeQuant{err: &quantcli.Error{Message: "fast must be smaller than slow", ExitCode: 2}}
-	rec := doRequest(newTestServer(fake).Handler(), http.MethodPost, "/api/backtests",
+	rec := doRequest(newTestServer(fake).Router(), http.MethodPost, "/api/backtests",
 		`{"strategy":"ma_cross","symbols":["BTCUSDT"]}`)
 
 	if rec.Code != http.StatusBadRequest {
@@ -126,7 +134,7 @@ func TestBacktestMapsCLIValidationErrorTo400(t *testing.T) {
 
 func TestBacktestMapsCLIInternalErrorTo502(t *testing.T) {
 	fake := &fakeQuant{err: &quantcli.Error{Message: "boom", ExitCode: 1}}
-	rec := doRequest(newTestServer(fake).Handler(), http.MethodPost, "/api/backtests",
+	rec := doRequest(newTestServer(fake).Router(), http.MethodPost, "/api/backtests",
 		`{"strategy":"ma_cross","symbols":["BTCUSDT"]}`)
 
 	if rec.Code != http.StatusBadGateway {
@@ -136,10 +144,11 @@ func TestBacktestMapsCLIInternalErrorTo502(t *testing.T) {
 
 func TestBacktestIsSingleFlight(t *testing.T) {
 	server := newTestServer(&fakeQuant{})
-	server.sem <- struct{}{} // simulate a running backtest
-	defer func() { <-server.sem }()
+	server.sems[1] = make(chan struct{}, 1)
+	server.sems[1] <- struct{}{} // simulate a running backtest for the test user
+	defer func() { <-server.sems[1] }()
 
-	rec := doRequest(server.Handler(), http.MethodPost, "/api/backtests",
+	rec := doRequest(server.Router(), http.MethodPost, "/api/backtests",
 		`{"strategy":"ma_cross","symbols":["BTCUSDT"]}`)
 
 	if rec.Code != http.StatusConflict {
@@ -147,12 +156,53 @@ func TestBacktestIsSingleFlight(t *testing.T) {
 	}
 }
 
-func TestIndexIsEmbedded(t *testing.T) {
-	rec := doRequest(newTestServer(&fakeQuant{}).Handler(), http.MethodGet, "/", "")
-	if rec.Code != http.StatusOK {
+func TestCORSAllowsConfiguredOrigin(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, "/api/backtests", nil)
+	req.Header.Set("Origin", "http://localhost:5173")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	newTestServer(&fakeQuant{}).Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "量化交易后台") {
-		t.Fatalf("index not served: %s", rec.Body.String()[:80])
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
+		t.Fatalf("allow-origin = %q", got)
+	}
+}
+
+func TestCORSAllowsSameHostWithoutConfig(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://trading.example.com/api/auth/login", nil)
+	req.Header.Set("Origin", "https://trading.example.com")
+	req.Header.Set("Content-Type", "application/json")
+	newTestServer(&fakeQuant{}).Router().ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("same-host origin was rejected: %d", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://trading.example.com" {
+		t.Fatalf("allow-origin = %q", got)
+	}
+}
+
+func TestCORSRejectsUnknownOrigin(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	newTestServer(&fakeQuant{}).Router().ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("allow-origin = %q, want empty", got)
+	}
+}
+
+func TestUnknownRouteReturnsJSON(t *testing.T) {
+	rec := doRequest(newTestServer(&fakeQuant{}).Router(), http.MethodGet, "/nope", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "not found") {
+		t.Fatalf("body = %s", rec.Body)
 	}
 }

@@ -16,6 +16,12 @@ data/*
 backend/bin/
 backend/api
 
+# frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/*.tsbuildinfo
+
 # editors / os
 .DS_Store
 .idea/
