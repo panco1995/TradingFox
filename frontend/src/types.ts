@@ -75,6 +75,30 @@ export interface User {
   created_at: string;
 }
 
+export interface KlineBar {
+  t: string;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+}
+
+export interface KlineResponse {
+  symbol: string;
+  interval: string;
+  start: string | null;
+  end: string | null;
+  count: number;
+  truncated: boolean;
+  bars: KlineBar[];
+}
+
+export interface KlineSymbols {
+  interval: string;
+  symbols: string[];
+}
+
 export interface CredentialsInfo {
   exchange: string;
   configured: boolean;

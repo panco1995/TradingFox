@@ -13,7 +13,7 @@
 | 策略注册表 + 内置策略（双均线、唐奇安） | 可用 |
 | 事件驱动回测 + 手续费/滑点/参与率 + 绩效报告 | 可用 |
 | Go Gin API（登录、用户、策略、回测、凭据） | 可用 |
-| Vue 3 管理后台（登录、回测、账户设置、用户管理） | 可用 |
+| Vue 3 管理后台（登录、K 线、回测、账户设置、用户管理） | 可用 |
 | 多用户隔离（JWT + `user_id` + 独立报告目录） | 可用 |
 | Binance API Key 加密存储（AES-256-GCM） | 可用 |
 | 实盘下单 / 仓位管理 / gRPC 控制面 | 未开始 |
@@ -113,6 +113,8 @@ Vue 后台 (:5173)  --HTTP/JSON + Cookie-->  Go Gin API (:8080)  --子进程--> 
 | POST | `/api/auth/login` | 邮箱密码登录，写入 HttpOnly Cookie（公开） |
 | POST | `/api/auth/logout` | 清除会话（公开） |
 | GET | `/api/auth/me` | 当前用户 |
+| GET | `/api/klines?symbol=BTCUSDT&interval=1m&days=2` | 本地已收盘 K 线（OHLCV） |
+| GET | `/api/klines/symbols?interval=1m` | 该周期下已有本地数据的交易对 |
 | GET | `/api/strategies` | 策略列表、`params_schema`、默认值 |
 | POST | `/api/backtests` | 同步执行回测，返回绩效与曲线 |
 | GET | `/api/backtests?limit=20` | 当前用户最近的回测 |

@@ -2,6 +2,8 @@ import type {
   BacktestReport,
   BacktestRequest,
   CredentialsInfo,
+  KlineResponse,
+  KlineSymbols,
   StrategySpec,
   User,
 } from "@/types";
@@ -102,6 +104,24 @@ export function putCredentials(body: {
 
 export function deleteCredentials(): Promise<void> {
   return request("/me/credentials", { method: "DELETE" });
+}
+
+export function getKlines(query: {
+  symbol: string;
+  interval: string;
+  days: number;
+}): Promise<KlineResponse> {
+  const params = new URLSearchParams({
+    symbol: query.symbol,
+    interval: query.interval,
+    days: String(query.days),
+  });
+  return request(`/klines?${params}`);
+}
+
+export function getKlineSymbols(interval: string): Promise<KlineSymbols> {
+  const params = new URLSearchParams({ interval });
+  return request(`/klines/symbols?${params}`);
 }
 
 export function getStrategies(): Promise<StrategySpec[]> {

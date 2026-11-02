@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { Collection, DataAnalysis, Key, SwitchButton, User } from "@element-plus/icons-vue";
+import {
+  Collection,
+  DataAnalysis,
+  Key,
+  SwitchButton,
+  TrendCharts,
+  User,
+} from "@element-plus/icons-vue";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
@@ -58,6 +65,10 @@ async function onCommand(command: Command) {
         <el-menu-item index="/">
           <el-icon><DataAnalysis /></el-icon>
           <span>策略回测</span>
+        </el-menu-item>
+        <el-menu-item index="/klines">
+          <el-icon><TrendCharts /></el-icon>
+          <span>K 线</span>
         </el-menu-item>
         <el-menu-item index="/strategies">
           <el-icon><Collection /></el-icon>

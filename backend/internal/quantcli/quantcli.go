@@ -60,6 +60,52 @@ type BacktestRequest struct {
 
 var symbolPattern = regexp.MustCompile(`^[A-Z0-9]{5,20}$`)
 
+// supportedIntervals matches quant.data.binance.INTERVAL_MS.
+var supportedIntervals = map[string]struct{}{
+	"1m": {}, "3m": {}, "5m": {}, "15m": {}, "30m": {},
+	"1h": {}, "2h": {}, "4h": {}, "6h": {}, "8h": {}, "12h": {},
+	"1d": {},
+}
+
+// KlineQuery is the admin chart request. It reads local Parquet, not the exchange.
+type KlineQuery struct {
+	Symbol   string
+	Interval string
+	Days     int
+	Start    string
+	End      string
+	Limit    int
+}
+
+// ValidateInterval reports whether the quant package can store this bar size.
+func ValidateInterval(interval string) error {
+	if _, ok := supportedIntervals[interval]; !ok {
+		return errors.New("不支持的周期")
+	}
+	return nil
+}
+
+// Validate rejects a chart query before spawning Python.
+func (q *KlineQuery) Validate() error {
+	q.Symbol = strings.ToUpper(strings.TrimSpace(q.Symbol))
+	if !symbolPattern.MatchString(q.Symbol) {
+		return errors.New("标的格式不正确，例如 BTCUSDT")
+	}
+	if q.Interval == "" {
+		q.Interval = "1m"
+	}
+	if err := ValidateInterval(q.Interval); err != nil {
+		return err
+	}
+	if q.Days < 1 || q.Days > 366 {
+		return errors.New("天数需要在 1 到 366 之间")
+	}
+	if q.Limit < 1 || q.Limit > 20_000 {
+		return errors.New("K 线数量需要在 1 到 20000 之间")
+	}
+	return nil
+}
+
 // Validate rejects obviously wrong input before spawning Python. Anything
 // semantic (unknown strategy, parameter ranges) is left to the Python side,
 // which owns the strategy schemas.
@@ -195,6 +241,54 @@ func (c *Client) Backtest(ctx context.Context, req BacktestRequest) (json.RawMes
 	}
 	if !json.Valid(out) {
 		return nil, errors.New("python CLI returned malformed JSON for backtest")
+	}
+	return json.RawMessage(out), nil
+}
+
+// Klines returns stored OHLCV bars as JSON.
+func (c *Client) Klines(ctx context.Context, query KlineQuery) (json.RawMessage, error) {
+	if err := query.Validate(); err != nil {
+		return nil, &Error{Message: err.Error(), ExitCode: 2}
+	}
+	args := []string{
+		"bars",
+		"--symbol", query.Symbol,
+		"--interval", query.Interval,
+		"--limit", strconv.Itoa(query.Limit),
+		"--json",
+	}
+	if query.Start != "" {
+		args = append(args, "--start", query.Start)
+	} else {
+		args = append(args, "--days", strconv.Itoa(query.Days))
+	}
+	if query.End != "" {
+		args = append(args, "--end", query.End)
+	}
+	out, err := c.run(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	if !json.Valid(out) {
+		return nil, errors.New("python CLI returned malformed JSON for klines")
+	}
+	return json.RawMessage(out), nil
+}
+
+// KlineSymbols lists symbols that have local bars for one interval.
+func (c *Client) KlineSymbols(ctx context.Context, interval string) (json.RawMessage, error) {
+	if interval == "" {
+		interval = "1m"
+	}
+	if err := ValidateInterval(interval); err != nil {
+		return nil, &Error{Message: err.Error(), ExitCode: 2}
+	}
+	out, err := c.run(ctx, "bars", "--symbols", "--interval", interval, "--json")
+	if err != nil {
+		return nil, err
+	}
+	if !json.Valid(out) {
+		return nil, errors.New("python CLI returned malformed JSON for symbols")
 	}
 	return json.RawMessage(out), nil
 }

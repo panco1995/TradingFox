@@ -23,6 +23,12 @@ const router = createRouter({
           meta: { title: "策略回测" },
         },
         {
+          path: "klines",
+          name: "klines",
+          component: () => import("@/views/KlineView.vue"),
+          meta: { title: "K 线" },
+        },
+        {
           path: "strategies",
           name: "strategies",
           component: () => import("@/views/StrategiesView.vue"),

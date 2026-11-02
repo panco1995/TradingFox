@@ -16,6 +16,7 @@ import math
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import polars as pl
 import typer
 from pydantic import ValidationError
 from rich.console import Console
@@ -29,7 +30,7 @@ from quant.config import BINANCE_MARKET_BASE, DEFAULT_INTERVAL, data_root
 from quant.data.binance import INTERVAL_MS, BinanceError, BinanceMarketData
 from quant.data.collector import Collector
 from quant.data.quality import check_bars, describe
-from quant.data.store import latest_open_time, read_bars, write_bars
+from quant.data.store import latest_open_time, list_symbols, read_bars, write_bars
 from quant.data.stream import WS_MARKET_BASE
 from quant.reporting import line_svg, sparkline
 from quant.strategies import registry
@@ -66,6 +67,58 @@ def _align_to_interval(dt: datetime, interval: str) -> datetime:
     aligned_ms = ms - ms % step
     # fromtimestamp takes seconds; aligned_ms is still epoch milliseconds.
     return datetime.fromtimestamp(aligned_ms // 1000, tz=UTC)
+
+
+def _iso_utc(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat()
+
+
+def bars_document(
+    df: pl.DataFrame,
+    *,
+    symbol: str,
+    interval: str,
+    start: datetime | None,
+    end: datetime | None,
+    limit: int,
+) -> dict[str, object]:
+    """JSON document consumed by the admin kline view.
+
+    The most recent ``limit`` rows are kept so a long 1-minute history cannot
+    flood the browser.
+    """
+    truncated = df.height > limit
+    view = df.tail(limit) if truncated else df
+    bars: list[dict[str, object]] = []
+    if view.height:
+        columns = ["open_time", "open", "high", "low", "close", "volume"]
+        for row in view.select(columns).iter_rows(named=True):
+            opened = row["open_time"]
+            if not isinstance(opened, datetime):
+                raise TypeError(f"open_time must be datetime, got {type(opened).__name__}")
+            bars.append(
+                {
+                    "t": _iso_utc(opened),
+                    "o": float(row["open"]),
+                    "h": float(row["high"]),
+                    "l": float(row["low"]),
+                    "c": float(row["close"]),
+                    "v": float(row["volume"]),
+                }
+            )
+    return {
+        "symbol": symbol,
+        "interval": interval,
+        "start": _iso_utc(start),
+        "end": _iso_utc(end),
+        "count": len(bars),
+        "truncated": truncated,
+        "bars": bars,
+    }
 
 
 def _safe_segment(value: str) -> str:
@@ -238,6 +291,58 @@ def inspect(
         svg.parent.mkdir(parents=True, exist_ok=True)
         svg.write_text(line_svg(closes, df["open_time"].to_list()))
         console.print(f"chart written to [cyan]{svg}[/cyan]")
+
+
+@app.command()
+def bars(
+    symbol: str = typer.Option("BTCUSDT", "--symbol", "-s"),
+    days: int | None = typer.Option(2, "--days", "-d"),
+    start: str | None = typer.Option(None),
+    end: str | None = typer.Option(None),
+    interval: str = typer.Option(DEFAULT_INTERVAL, "--interval", "-i"),
+    data_dir: Path | None = typer.Option(None, "--data-dir"),
+    limit: int = typer.Option(10_000, "--limit", help="max bars, keeping the most recent"),
+    symbols_only: bool = typer.Option(
+        False, "--symbols", help="list stored symbols for this interval"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="machine readable, used by the web UI"),
+) -> None:
+    """Read stored klines. The admin UI calls this with --json."""
+    if interval not in INTERVAL_MS:
+        raise typer.BadParameter(f"unsupported interval: {interval}")
+    root = (data_dir or data_root()).expanduser().resolve()
+
+    if symbols_only:
+        payload = {"interval": interval, "symbols": list_symbols(root=root, interval=interval)}
+        if as_json:
+            typer.echo(json.dumps(payload, ensure_ascii=False))
+            return
+        console.print(f"{interval}: {', '.join(payload['symbols']) or '(none)'}")
+        return
+
+    if limit < 1 or limit > 20_000:
+        raise typer.BadParameter("limit must be between 1 and 20000")
+    if start is None and (days is None or days < 1 or days > 366):
+        raise typer.BadParameter("days must be between 1 and 366")
+
+    start_dt, end_dt = _resolve_range(days, start, end)
+    df = read_bars(symbol, start=start_dt, end=end_dt, root=root, interval=interval)
+    payload = bars_document(
+        df, symbol=symbol, interval=interval, start=start_dt, end=end_dt, limit=limit
+    )
+    if as_json:
+        typer.echo(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        return
+
+    shown = payload["bars"]
+    if not isinstance(shown, list) or not shown:
+        console.print(f"[yellow]no bars for {symbol} {interval}[/yellow] under {root}")
+        return
+    last = shown[-1]
+    console.print(
+        f"{symbol} {interval} bars={payload['count']} truncated={payload['truncated']} "
+        f"last={last['t']} close={last['c']}"
+    )
 
 
 @app.command()

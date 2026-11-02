@@ -16,10 +16,14 @@ import (
 )
 
 type fakeQuant struct {
-	strategies json.RawMessage
-	result     json.RawMessage
-	err        error
-	got        quantcli.BacktestRequest
+	strategies  json.RawMessage
+	result      json.RawMessage
+	klines      json.RawMessage
+	symbols     json.RawMessage
+	err         error
+	got         quantcli.BacktestRequest
+	gotKline    quantcli.KlineQuery
+	gotInterval string
 }
 
 func (f *fakeQuant) Strategies(context.Context) (json.RawMessage, error) {
@@ -29,6 +33,22 @@ func (f *fakeQuant) Strategies(context.Context) (json.RawMessage, error) {
 func (f *fakeQuant) Backtest(_ context.Context, req quantcli.BacktestRequest) (json.RawMessage, error) {
 	f.got = req
 	return f.result, f.err
+}
+
+func (f *fakeQuant) Klines(_ context.Context, query quantcli.KlineQuery) (json.RawMessage, error) {
+	f.gotKline = query
+	if f.klines != nil {
+		return f.klines, f.err
+	}
+	return f.result, f.err
+}
+
+func (f *fakeQuant) KlineSymbols(_ context.Context, interval string) (json.RawMessage, error) {
+	f.gotInterval = interval
+	if f.symbols != nil {
+		return f.symbols, f.err
+	}
+	return json.RawMessage(`{"interval":"` + interval + `","symbols":[]}`), f.err
 }
 
 func init() {
@@ -47,6 +67,46 @@ func doRequest(handler http.Handler, method, path, body string) *httptest.Respon
 	req.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(rec, req)
 	return rec
+}
+
+func TestKlinesPassThrough(t *testing.T) {
+	fake := &fakeQuant{klines: json.RawMessage(`{"symbol":"BTCUSDT","count":0,"bars":[]}`)}
+	rec := doRequest(newTestServer(fake).Router(), http.MethodGet, "/api/klines?symbol=btcusdt&interval=1h&days=3", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body)
+	}
+	if fake.gotKline.Symbol != "BTCUSDT" || fake.gotKline.Interval != "1h" || fake.gotKline.Days != 3 {
+		t.Fatalf("query = %+v", fake.gotKline)
+	}
+	if fake.gotKline.Limit != 10_000 {
+		t.Fatalf("limit = %d", fake.gotKline.Limit)
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"symbol":"BTCUSDT","count":0,"bars":[]}` {
+		t.Fatalf("body = %s", got)
+	}
+}
+
+func TestKlinesRejectsBadSymbol(t *testing.T) {
+	fake := &fakeQuant{}
+	rec := doRequest(newTestServer(fake).Router(), http.MethodGet, "/api/klines?symbol=BTC&days=2", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body)
+	}
+	if fake.gotKline.Symbol != "" {
+		t.Fatalf("python was called: %+v", fake.gotKline)
+	}
+}
+
+func TestKlineSymbolsPassThrough(t *testing.T) {
+	fake := &fakeQuant{symbols: json.RawMessage(`{"interval":"1m","symbols":["BTCUSDT"]}`)}
+	rec := doRequest(newTestServer(fake).Router(), http.MethodGet, "/api/klines/symbols?interval=1m", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body)
+	}
+	if fake.gotInterval != "1m" {
+		t.Fatalf("interval = %s", fake.gotInterval)
+	}
 }
 
 func TestHealth(t *testing.T) {
