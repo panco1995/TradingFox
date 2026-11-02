@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -9,9 +10,11 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from quant.data.store import read_bars
+from quant.data.resample import load_bars
 
 _PRICE_COLUMNS = ("open", "high", "low", "close", "volume")
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -58,9 +61,18 @@ def load_market(
 
     frames: dict[str, pl.DataFrame] = {}
     for symbol in symbols:
-        frame = read_bars(symbol, start=start, end=end, root=root, interval=interval)
+        # Higher intervals are derived from the stored 1m bars, so this reads
+        # whatever is on disk and aggregates on the fly.
+        frame = load_bars(symbol, interval=interval, start=start, end=end, root=root)
         if frame.is_empty():
-            raise ValueError(f"no stored bars for {symbol}, run `quant fetch` first")
+            hint = "run `quant fetch` first" if interval == "1m" else "1m history is too short"
+            raise ValueError(f"no stored bars for {symbol} at {interval} ({hint})")
+        if "closed" in frame.columns:
+            # A bar that is still forming would let the engine trade on an
+            # incomplete close, which is lookahead by another name.
+            frame = frame.filter(pl.col("closed"))
+            if frame.is_empty():
+                raise ValueError(f"{symbol} has no completed {interval} bars yet")
         frames[symbol] = frame.select(["open_time", *_PRICE_COLUMNS])
 
     base = frames[symbols[0]].rename({c: f"{symbols[0]}|{c}" for c in _PRICE_COLUMNS})

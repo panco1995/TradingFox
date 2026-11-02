@@ -694,6 +694,10 @@ def backtest(
     root = (data_dir or data_root()).expanduser().resolve()
     start_dt, end_dt = _resolve_range(days, start, end)
 
+    known = set(INTERVAL_MS) | set(SUPPORTED_INTERVALS)
+    if interval not in known:
+        raise typer.BadParameter(f"unsupported interval: {interval}")
+
     try:
         strategy_obj = registry.build(strategy, _parse_params(param))
     except KeyError as exc:
