@@ -60,11 +60,13 @@ type BacktestRequest struct {
 
 var symbolPattern = regexp.MustCompile(`^[A-Z0-9]{5,20}$`)
 
-// supportedIntervals matches quant.data.binance.INTERVAL_MS.
+// supportedIntervals covers both the native Binance intervals actually stored
+// as Parquet and the higher timeframes derived from 1m bars (see
+// quant/data/resample.py).
 var supportedIntervals = map[string]struct{}{
 	"1m": {}, "3m": {}, "5m": {}, "15m": {}, "30m": {},
 	"1h": {}, "2h": {}, "4h": {}, "6h": {}, "8h": {}, "12h": {},
-	"1d": {},
+	"1d": {}, "3d": {}, "1w": {}, "1M": {},
 }
 
 // KlineQuery is the admin chart request. It reads local Parquet, not the exchange.

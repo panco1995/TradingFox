@@ -30,6 +30,7 @@ from quant.config import BINANCE_MARKET_BASE, DEFAULT_INTERVAL, data_root
 from quant.data.binance import INTERVAL_MS, BinanceError, BinanceMarketData
 from quant.data.collector import Collector
 from quant.data.quality import check_bars, describe
+from quant.data.resample import BASE_INTERVAL, SUPPORTED_INTERVALS, load_bars
 from quant.data.store import latest_open_time, list_symbols, read_bars, write_bars
 from quant.data.stream import WS_MARKET_BASE
 from quant.reporting import line_svg, sparkline
@@ -89,27 +90,32 @@ def bars_document(
     """JSON document consumed by the admin kline view.
 
     The most recent ``limit`` rows are kept so a long 1-minute history cannot
-    flood the browser.
+    flood the browser. Aggregated frames also report whether the last bucket is
+    still forming.
     """
     truncated = df.height > limit
     view = df.tail(limit) if truncated else df
+    columns = ["open_time", "open", "high", "low", "close", "volume"]
+    if "closed" in view.columns:
+        columns.append("closed")
     bars: list[dict[str, object]] = []
     if view.height:
-        columns = ["open_time", "open", "high", "low", "close", "volume"]
         for row in view.select(columns).iter_rows(named=True):
             opened = row["open_time"]
             if not isinstance(opened, datetime):
                 raise TypeError(f"open_time must be datetime, got {type(opened).__name__}")
-            bars.append(
-                {
-                    "t": _iso_utc(opened),
-                    "o": float(row["open"]),
-                    "h": float(row["high"]),
-                    "l": float(row["low"]),
-                    "c": float(row["close"]),
-                    "v": float(row["volume"]),
-                }
-            )
+            closed = row.get("closed")
+            point: dict[str, object] = {
+                "t": _iso_utc(opened),
+                "o": float(row["open"]),
+                "h": float(row["high"]),
+                "l": float(row["low"]),
+                "c": float(row["close"]),
+                "v": float(row["volume"]),
+            }
+            if closed is not None:
+                point["closed"] = bool(closed)
+            bars.append(point)
     return {
         "symbol": symbol,
         "interval": interval,
@@ -117,6 +123,7 @@ def bars_document(
         "end": _iso_utc(end),
         "count": len(bars),
         "truncated": truncated,
+        "aggregated": interval != "1m",
         "bars": bars,
     }
 
@@ -307,17 +314,22 @@ def bars(
     ),
     as_json: bool = typer.Option(False, "--json", help="machine readable, used by the web UI"),
 ) -> None:
-    """Read stored klines. The admin UI calls this with --json."""
-    if interval not in INTERVAL_MS:
+    """Read klines at any interval. The admin UI calls this with --json."""
+    known = set(INTERVAL_MS) | set(SUPPORTED_INTERVALS)
+    if interval not in known:
         raise typer.BadParameter(f"unsupported interval: {interval}")
     root = (data_dir or data_root()).expanduser().resolve()
 
     if symbols_only:
-        payload = {"interval": interval, "symbols": list_symbols(root=root, interval=interval)}
+        # Only 1m partitions exist on disk; every other interval is derived.
+        listed = sorted(
+            set(list_symbols(root=root, interval=BASE_INTERVAL))
+            | {s for s in list_symbols(root=root, interval=interval) if interval != BASE_INTERVAL}
+        )
         if as_json:
-            typer.echo(json.dumps(payload, ensure_ascii=False))
+            typer.echo(json.dumps({"interval": interval, "symbols": listed}, ensure_ascii=False))
             return
-        console.print(f"{interval}: {', '.join(payload['symbols']) or '(none)'}")
+        console.print(f"{interval}: {', '.join(listed) or '(none)'}")
         return
 
     if limit < 1 or limit > 20_000:
@@ -326,7 +338,7 @@ def bars(
         raise typer.BadParameter("days must be between 1 and 366")
 
     start_dt, end_dt = _resolve_range(days, start, end)
-    df = read_bars(symbol, start=start_dt, end=end_dt, root=root, interval=interval)
+    df = load_bars(symbol, interval=interval, start=start_dt, end=end_dt, root=root)
     payload = bars_document(
         df, symbol=symbol, interval=interval, start=start_dt, end=end_dt, limit=limit
     )
@@ -339,9 +351,10 @@ def bars(
         console.print(f"[yellow]no bars for {symbol} {interval}[/yellow] under {root}")
         return
     last = shown[-1]
+    forming = "" if last.get("closed", True) else " (last bar still forming)"
     console.print(
         f"{symbol} {interval} bars={payload['count']} truncated={payload['truncated']} "
-        f"last={last['t']} close={last['c']}"
+        f"last={last['t']} close={last['c']}{forming}"
     )
 
 

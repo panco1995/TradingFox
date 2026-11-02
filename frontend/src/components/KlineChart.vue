@@ -51,7 +51,23 @@ function stamp(iso: string): string {
 
 function option(): echarts.EChartsCoreOption {
   const categories = props.bars.map((bar) => stamp(bar.t));
-  const candles = props.bars.map((bar) => [bar.o, bar.c, bar.l, bar.h]);
+  // A bar that is still forming gets a hollow body so it never reads as final.
+  const candles = props.bars.map((bar, index) => {
+    const body: [number, number, number, number] = [bar.o, bar.c, bar.l, bar.h];
+    if (bar.closed === false) {
+      return {
+        value: body,
+        itemStyle: {
+          color: "transparent",
+          color0: "transparent",
+          borderColor: index === props.bars.length - 1 ? UP : "#8b9bb0",
+          borderColor0: DOWN,
+          borderType: "dashed",
+        },
+      };
+    }
+    return body;
+  });
   const volumes = props.bars.map((bar) => ({
     value: bar.v,
     itemStyle: { color: bar.c >= bar.o ? UP : DOWN },
@@ -82,14 +98,18 @@ function option(): echarts.EChartsCoreOption {
         const bar = props.bars[index];
         if (!bar) return "";
         const tone = bar.c >= bar.o ? UP : DOWN;
-        return [
+        const lines = [
           stamp(bar.t),
           `开 <b>${price(bar.o)}</b>`,
           `高 <b>${price(bar.h)}</b>`,
           `低 <b>${price(bar.l)}</b>`,
           `收 <b style="color:${tone}">${price(bar.c)}</b>`,
           `量 <b>${volume(bar.v)}</b>`,
-        ].join("<br/>");
+        ];
+        if (bar.closed === false) {
+          lines.push('<span style="color:#fbbf24">未收盘</span>');
+        }
+        return lines.join("<br/>");
       },
     },
     xAxis: [

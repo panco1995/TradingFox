@@ -113,7 +113,7 @@ Vue 后台 (:5173)  --HTTP/JSON + Cookie-->  Go Gin API (:8080)  --子进程--> 
 | POST | `/api/auth/login` | 邮箱密码登录，写入 HttpOnly Cookie（公开） |
 | POST | `/api/auth/logout` | 清除会话（公开） |
 | GET | `/api/auth/me` | 当前用户 |
-| GET | `/api/klines?symbol=BTCUSDT&interval=1m&days=2` | 本地已收盘 K 线（OHLCV） |
+| GET | `/api/klines?symbol=BTCUSDT&interval=1m&days=2` | 本地已收盘 K 线（OHLCV），支持 3m/5m/15m/30m/1h/2h/4h/6h/8h/12h/1d/3d/1w/1M |
 | GET | `/api/klines/symbols?interval=1m` | 该周期下已有本地数据的交易对 |
 | GET | `/api/strategies` | 策略列表、`params_schema`、默认值 |
 | POST | `/api/backtests` | 同步执行回测，返回绩效与曲线 |
@@ -246,6 +246,42 @@ make web-build     # 前端生产构建
 make check         # Python + Go + Vue 全量检查
 make api           # 启动 Go API
 make web-dev       # 启动前端开发服务器
+```
+
+## 行情周期：1 分钟落盘，其它周期聚合
+
+交易所侧只采集 **1 分钟** K 线，`data/raw/klines/.../interval=1m/` 是唯一的数据源。
+其余周期在读取时由 `quant/data/resample.py` 从 1 分钟聚合，后台图表和 CLI 都走同一条路径：
+
+| 周期 | `--interval` |
+|---|---|
+| 3 / 5 / 15 / 30 分钟 | `3m` `5m` `15m` `30m` |
+| 1 / 2 / 4 / 6 / 8 / 12 小时 | `1h` `2h` `4h` `6h` `8h` `12h` |
+| 1 天 / 3 天 / 1 周 / 1 月 | `1d` `3d` `1w` `1M` |
+
+两条硬规则：
+
+- **边界按日历**：周线从 UTC 周一 00:00 起算，月线从当月 1 号起算；固定周期（如 3 天）从
+  1970-01-01 起算，不随加载到的数据范围漂移。
+- **未收盘的桶不算完成**：某根 bar 的 1 分钟数量不足应有数量时（最后一根、或中间缺数据），
+  结果里 `closed=false`，后台图表用空心虚线画，回测不把它当成已完成 K 线。
+
+```bash
+cd quant
+
+# 任意周期
+.venv/bin/python -m quant.cli bars -s BTCUSDT -i 1w -d 365
+.venv/bin/python -m quant.cli bars -s BTCUSDT -i 1M -d 365 --json
+
+# 该周期下有哪些交易对（只有 1m 分区落盘，其余周期自动列出）
+.venv/bin/python -m quant.cli bars --symbols -i 1w --json
+```
+
+聚合的精度取决于已有的 1 分钟历史：只有 2 天数据时，月线会是空的。要周线、月线有意义，
+先把 1 分钟补长：
+
+```bash
+.venv/bin/python -m quant.cli fetch -s BTCUSDT -d 365   # 约 52 万根，几分钟
 ```
 
 ## 实时采集器

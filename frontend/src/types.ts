@@ -82,6 +82,7 @@ export interface KlineBar {
   l: number;
   c: number;
   v: number;
+  closed?: boolean;
 }
 
 export interface KlineResponse {
@@ -91,6 +92,7 @@ export interface KlineResponse {
   end: string | null;
   count: number;
   truncated: boolean;
+  aggregated: boolean;
   bars: KlineBar[];
 }
 

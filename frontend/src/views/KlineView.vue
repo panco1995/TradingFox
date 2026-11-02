@@ -8,14 +8,23 @@ import type { KlineBar, KlineResponse } from "@/types";
 
 const INTERVALS = [
   { value: "1m", label: "1 分钟" },
+  { value: "3m", label: "3 分钟" },
   { value: "5m", label: "5 分钟" },
   { value: "15m", label: "15 分钟" },
+  { value: "30m", label: "30 分钟" },
   { value: "1h", label: "1 小时" },
+  { value: "2h", label: "2 小时" },
   { value: "4h", label: "4 小时" },
+  { value: "6h", label: "6 小时" },
+  { value: "8h", label: "8 小时" },
+  { value: "12h", label: "12 小时" },
   { value: "1d", label: "1 天" },
+  { value: "3d", label: "3 天" },
+  { value: "1w", label: "1 周" },
+  { value: "1M", label: "1 月" },
 ];
 
-const DAY_OPTIONS = [1, 2, 7, 14, 30];
+const DAY_OPTIONS = [1, 2, 7, 14, 30, 90, 180, 365];
 
 const symbol = ref("BTCUSDT");
 const interval = ref("1m");
@@ -25,14 +34,31 @@ const loading = ref(false);
 const errorMessage = ref("");
 const data = ref<KlineResponse | null>(null);
 
+const intervalLabel = computed(
+  () => INTERVALS.find((item) => item.value === interval.value)?.label ?? interval.value
+);
+
 const bars = computed(() => data.value?.bars ?? []);
 const recent = computed(() => [...bars.value].slice(-12).reverse());
+
+// Only the trailing bucket can still be forming; aggregated intervals and the
+// raw 1m feed leave it unclosed until the full minute count has landed.
+const lastIsForming = computed(() => {
+  const rows = bars.value;
+  return rows.length > 0 && rows[rows.length - 1].closed === false;
+});
+
+const latestClosed = computed(() => {
+  const rows = bars.value;
+  const index = lastIsForming.value ? rows.length - 2 : rows.length - 1;
+  return index >= 0 ? rows[index] : null;
+});
 
 const summary = computed(() => {
   const rows = bars.value;
   if (rows.length === 0) return null;
   const first = rows[0];
-  const last = rows[rows.length - 1];
+  const last = latestClosed.value ?? rows[rows.length - 1];
   let high = first.h;
   let low = first.l;
   let volumeSum = 0;
@@ -173,6 +199,15 @@ function tone(bar: KlineBar): string {
       style="margin: 16px 0"
     />
 
+    <el-alert
+      v-if="lastIsForming && data && data.interval !== '1m'"
+      :title="`最后一根 ${data.interval} K 线还在形成中，图上用空心虚线表示；指标和回测只使用已收盘的 K 线。`"
+      type="info"
+      show-icon
+      :closable="false"
+      style="margin: 16px 0"
+    />
+
     <div v-if="!data && !errorMessage" class="empty-panel">
       <el-empty :description="loading ? '正在读取本地行情…' : '选择交易对后查看 K 线'" :image-size="116" />
     </div>
@@ -188,7 +223,9 @@ function tone(bar: KlineBar): string {
       <template v-else>
         <div v-if="summary" class="metric-grid kline-metrics">
           <div class="metric-card">
-            <div class="metric-label">最新价</div>
+            <div class="metric-label">
+              最新价{{ lastIsForming ? "（已收盘）" : "" }}
+            </div>
             <div class="metric-value" :class="tone(summary.last)">{{ fmtPrice(summary.last.c) }}</div>
           </div>
           <div class="metric-card">
@@ -219,9 +256,10 @@ function tone(bar: KlineBar): string {
           <template #header>
             <div class="card-title">
               <el-icon><TrendCharts /></el-icon>
-              {{ data.symbol }} · {{ interval }}
+              {{ data.symbol }} · {{ intervalLabel }}
               <span class="aside">
                 {{ fmtTime(summary!.first.t) }} → {{ fmtTime(summary!.last.t) }} UTC
+                <template v-if="data.aggregated"> · 由 1 分钟聚合</template>
               </span>
             </div>
           </template>
