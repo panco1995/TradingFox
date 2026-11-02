@@ -16,15 +16,19 @@ import (
 )
 
 type fakeQuant struct {
-	strategies  json.RawMessage
-	result      json.RawMessage
-	klines      json.RawMessage
-	symbols     json.RawMessage
-	status      json.RawMessage
-	err         error
-	got         quantcli.BacktestRequest
-	gotKline    quantcli.KlineQuery
-	gotInterval string
+	strategies    json.RawMessage
+	result        json.RawMessage
+	klines        json.RawMessage
+	symbols       json.RawMessage
+	status        json.RawMessage
+	symbolsResult json.RawMessage
+	err           error
+	got           quantcli.BacktestRequest
+	gotKline      quantcli.KlineQuery
+	gotInterval   string
+	gotAction     string
+	gotSymbol     string
+	gotUpdatedBy  string
 }
 
 func (f *fakeQuant) Strategies(context.Context) (json.RawMessage, error) {
@@ -58,6 +62,18 @@ func (f *fakeQuant) CollectorStatus(_ context.Context, interval string) (json.Ra
 		return f.status, f.err
 	}
 	return json.RawMessage(`{"collector":{"running":false},"symbols":[]}`), f.err
+}
+
+func (f *fakeQuant) Symbols(
+	_ context.Context, action, symbol, updatedBy string,
+) (json.RawMessage, error) {
+	f.gotAction = action
+	f.gotSymbol = symbol
+	f.gotUpdatedBy = updatedBy
+	if f.symbolsResult != nil {
+		return f.symbolsResult, f.err
+	}
+	return json.RawMessage(`{"symbols":["BTCUSDT"],"message":""}`), f.err
 }
 
 func init() {
@@ -137,6 +153,78 @@ func TestCollectorStatusRejectsBadInterval(t *testing.T) {
 	rec := doRequest(newTestServer(fake).Router(), http.MethodGet, "/api/collector?interval=2x", "")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body)
+	}
+}
+
+func TestAddSymbolValidatesAndPassesUser(t *testing.T) {
+	fake := &fakeQuant{
+		symbolsResult: json.RawMessage(`{"symbols":["BTCUSDT","SOLUSDT"],"message":"SOLUSDT 已加入"}`),
+	}
+	rec := doRequest(
+		newTestServer(fake).Router(), http.MethodPost, "/api/symbols", `{"symbol":"solusdt"}`,
+	)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body)
+	}
+	if fake.gotAction != "add" || fake.gotSymbol != "SOLUSDT" {
+		t.Fatalf("action=%s symbol=%s", fake.gotAction, fake.gotSymbol)
+	}
+	if fake.gotUpdatedBy != "user_1" {
+		t.Fatalf("updatedBy = %s", fake.gotUpdatedBy)
+	}
+}
+
+func TestAddSymbolRejectsEmptyBody(t *testing.T) {
+	fake := &fakeQuant{}
+	rec := doRequest(newTestServer(fake).Router(), http.MethodPost, "/api/symbols", `{"symbol":"  "}`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body)
+	}
+	// Nothing may reach Python when the request itself is empty.
+	if fake.gotAction != "" {
+		t.Fatalf("python was called: %s", fake.gotAction)
+	}
+}
+
+func TestAddSymbolSurfacesCliRejection(t *testing.T) {
+	fake := &fakeQuant{
+		err: &quantcli.Error{Message: "交易所没有 FOOBARUSDT 这个交易对", ExitCode: 2},
+	}
+	rec := doRequest(
+		newTestServer(fake).Router(), http.MethodPost, "/api/symbols", `{"symbol":"FOOBARUSDT"}`,
+	)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "交易所没有") {
+		t.Fatalf("body = %s", rec.Body)
+	}
+}
+
+func TestRemoveSymbol(t *testing.T) {
+	fake := &fakeQuant{symbolsResult: json.RawMessage(`{"symbols":["BTCUSDT"]}`)}
+	rec := doRequest(newTestServer(fake).Router(), http.MethodDelete, "/api/symbols/ethusdt", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body)
+	}
+	if fake.gotAction != "remove" || fake.gotSymbol != "ETHUSDT" {
+		t.Fatalf("action=%s symbol=%s", fake.gotAction, fake.gotSymbol)
+	}
+}
+
+func TestListSymbols(t *testing.T) {
+	fake := &fakeQuant{symbolsResult: json.RawMessage(`{"symbols":["BTCUSDT","ETHUSDT"]}`)}
+	rec := doRequest(newTestServer(fake).Router(), http.MethodGet, "/api/symbols", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body)
+	}
+	if fake.gotAction != "list" {
+		t.Fatalf("action = %s", fake.gotAction)
 	}
 }
 

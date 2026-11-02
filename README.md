@@ -117,6 +117,9 @@ Vue 后台 (:5173)  --HTTP/JSON + Cookie-->  Go Gin API (:8080)  --子进程--> 
 | GET | `/api/klines/symbols?interval=1m` | 该周期下已有本地数据的交易对 |
 | GET | `/api/strategies` | 策略列表、`params_schema`、默认值 |
 | GET | `/api/collector?interval=1m` | 采集器运行状态与每个交易对的最后更新时间 |
+| GET | `/api/symbols` | 采集器当前订阅的交易对 |
+| POST | `/api/symbols` | 添加交易对；先向交易所校验，可用才写入 |
+| DELETE | `/api/symbols/:symbol` | 停止采集该交易对（保留历史数据） |
 | POST | `/api/backtests` | 同步执行回测，返回绩效与曲线 |
 | GET | `/api/backtests?limit=20` | 当前用户最近的回测 |
 | GET | `/api/backtests/:id` | 当前用户的单次回测完整结果 |
@@ -284,6 +287,28 @@ cd quant
 ```bash
 .venv/bin/python -m quant.cli fetch -s BTCUSDT -d 365   # 约 52 万根，几分钟
 ```
+
+## 交易对管理
+
+采集哪些交易对保存在 `data/meta/symbols.json`，后台「数据采集」页面可以直接增删。
+
+**添加会先向交易所校验**，只有状态是 `TRADING` 的交易对才会写入配置文件：
+
+```bash
+cd quant
+.venv/bin/python -m quant.cli subscriptions                        # 当前列表
+.venv/bin/python -m quant.cli subscriptions --check solusdt        # 只校验，不保存
+.venv/bin/python -m quant.cli subscriptions --add SOLUSDT          # 校验后保存
+.venv/bin/python -m quant.cli subscriptions --remove SOLUSDT       # 停止采集
+```
+
+校验覆盖三类失败：格式不对（非字母数字）、交易所没有该交易对（`-1121`）、当前不可交易（如 `BREAK`）。
+任何一种都不会写文件，所以列表里不会有拼错的交易对。
+
+`watch` 默认从配置文件读取交易对，并**监视文件变化**：后台添加后采集器会在几秒内自动重连并开始接收，
+不需要重启进程。移除只是停止订阅，已经落盘的 Parquet 保留，随时可以加回来。
+
+显式传 `--symbol` 启动时会忽略配置文件（`--no-follow` 效果），适合临时调试。
 
 ## 数据采集状态
 

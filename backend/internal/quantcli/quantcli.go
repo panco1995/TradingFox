@@ -314,6 +314,49 @@ func (c *Client) CollectorStatus(ctx context.Context, interval string) (json.Raw
 	return json.RawMessage(out), nil
 }
 
+// Symbols lists, validates or mutates the collector's subscription set.
+//
+// Adding runs the exchange check inside Python: the symbol must exist and be
+// TRADING before anything is written, so a typo never lands in the config.
+func (c *Client) Symbols(
+	ctx context.Context, action, symbol, updatedBy string,
+) (json.RawMessage, error) {
+	args := []string{"subscriptions"}
+	switch action {
+	case "", "list":
+	case "add":
+		if strings.TrimSpace(symbol) == "" {
+			return nil, &Error{Message: "请输入交易对", ExitCode: 2}
+		}
+		args = append(args, "--add", strings.ToUpper(strings.TrimSpace(symbol)))
+	case "remove":
+		if strings.TrimSpace(symbol) == "" {
+			return nil, &Error{Message: "请输入交易对", ExitCode: 2}
+		}
+		args = append(args, "--remove", strings.ToUpper(strings.TrimSpace(symbol)))
+	case "check":
+		if strings.TrimSpace(symbol) == "" {
+			return nil, &Error{Message: "请输入交易对", ExitCode: 2}
+		}
+		args = append(args, "--check", strings.ToUpper(strings.TrimSpace(symbol)))
+	default:
+		return nil, &Error{Message: "unknown action: " + action, ExitCode: 2}
+	}
+	if updatedBy != "" && action != "" && action != "list" && action != "check" {
+		args = append(args, "--updated-by", updatedBy)
+	}
+	args = append(args, "--json")
+
+	out, err := c.run(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	if !json.Valid(out) {
+		return nil, errors.New("python CLI returned malformed JSON for symbols")
+	}
+	return json.RawMessage(out), nil
+}
+
 func scalarString(value any) string {
 	switch v := value.(type) {
 	case string:

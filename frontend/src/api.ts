@@ -6,6 +6,7 @@ import type {
   KlineResponse,
   KlineSymbols,
   StrategySpec,
+  SymbolMutation,
   User,
 } from "@/types";
 
@@ -128,6 +129,17 @@ export function getKlineSymbols(interval: string): Promise<KlineSymbols> {
 export function getCollectorStatus(interval = "1m"): Promise<CollectorStatus> {
   const params = new URLSearchParams({ interval });
   return request(`/collector?${params}`);
+}
+
+export function addSymbol(symbol: string): Promise<SymbolMutation> {
+  return request("/symbols", {
+    method: "POST",
+    body: JSON.stringify({ symbol }),
+  });
+}
+
+export function removeSymbol(symbol: string): Promise<SymbolMutation> {
+  return request(`/symbols/${encodeURIComponent(symbol)}`, { method: "DELETE" });
 }
 
 export function getStrategies(): Promise<StrategySpec[]> {

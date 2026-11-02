@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import polars as pl
+import pytest
 
 from quant.data.store import (
     latest_open_time,
@@ -106,6 +107,17 @@ def test_symbol_coverage_reports_freshness(bars_factory, tmp_path):
     assert rows["BTCUSDT"]["last"] == datetime(2026, 1, 1, 0, 2, tzinfo=UTC)
     assert rows["BTCUSDT"]["bytes"] > 0
     assert rows["BTCUSDT"]["files"] == 1
+
+
+def test_symbol_coverage_reports_latest_close(bars_factory, tmp_path):
+    df = bars_factory(4)
+    write_bars(df, "BTCUSDT", root=tmp_path)
+
+    row = symbol_coverage(root=tmp_path)[0]
+
+    # The newest bar is the last row, not the first one in the file.
+    assert row["close"] == pytest.approx(float(df["close"][-1]))
+    assert row["last"] == df["open_time"].max()
 
 
 def test_symbol_coverage_is_empty_without_data(tmp_path):

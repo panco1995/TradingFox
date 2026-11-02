@@ -34,6 +34,7 @@ from quant.data.heartbeat import DEFAULT_HEARTBEAT_SECONDS, write_heartbeat
 from quant.data.quality import check_bars, describe
 from quant.data.store import latest_open_time, read_bars, write_bars
 from quant.data.stream import WS_MARKET_BASE, KlineBar, parse_kline, stream_url
+from quant.data.subscriptions import read_subscriptions, subscriptions_path
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +98,7 @@ class Collector:
         verify_every_hours: float = 0.0,
         verify_days: int = 1,
         heartbeat_seconds: float = DEFAULT_HEARTBEAT_SECONDS,
+        watch_subscriptions: bool = False,
     ) -> None:
         if interval not in INTERVAL_MS:
             raise ValueError(f"unsupported interval: {interval}")
@@ -114,6 +116,8 @@ class Collector:
         self.repair_window_minutes = repair_window_minutes
         self.verify_every_hours = verify_every_hours
         self.verify_days = verify_days
+        self.watch_subscriptions = watch_subscriptions
+        self._subs_mtime = self._subscriptions_mtime()
 
         self.stats = CollectorStats()
         self._buffer: dict[str, list[dict[str, object]]] = {s: [] for s in self.symbols}
@@ -124,6 +128,40 @@ class Collector:
         self._stop = False
 
     # ------------------------------------------------------------------ state
+
+    def _subscriptions_mtime(self) -> float | None:
+        """Modification time of the symbol file, or None when not watching."""
+        if not self.watch_subscriptions:
+            return None
+        try:
+            return subscriptions_path(self.root).stat().st_mtime
+        except OSError:
+            return None
+
+    def reload_symbols(self) -> bool:
+        """Swap in a changed symbol list. Returns True when it actually changed.
+
+        A live websocket is bound to its subscription, so the caller must
+        reconnect afterwards; buffered bars are flushed first so nothing is lost.
+        """
+        mtime = self._subscriptions_mtime()
+        if mtime is None or mtime == self._subs_mtime:
+            return False
+        self._subs_mtime = mtime
+
+        wanted = read_subscriptions(self.root)
+        if not wanted:
+            return False
+        # Keep the user's order but drop anything already streaming, so an
+        # accidental duplicate write does not trigger a pointless reconnect.
+        if wanted == self.symbols:
+            return False
+
+        self.flush()
+        self.symbols = wanted
+        self._buffer = {s: [] for s in wanted}
+        log.info("subscriptions changed, now streaming %s", ",".join(wanted))
+        return True
 
     @property
     def stopping(self) -> bool:
@@ -296,6 +334,10 @@ class Collector:
                             raise ConnectionError(
                                 f"no ws message for {self.idle_timeout:.0f}s, reconnecting"
                             )
+                        if self.reload_symbols():
+                            # The socket is subscribed to the old symbol list;
+                            # reconnect so the new one takes effect immediately.
+                            raise ConnectionError("subscriptions changed, reconnecting")
                         await self._maybe_flush()
                         await self._maybe_log_stats()
                         self._maybe_heartbeat()

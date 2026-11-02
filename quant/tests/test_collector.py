@@ -100,6 +100,56 @@ def test_empty_symbols_rejected(tmp_path):
         Collector(symbols=[], root=tmp_path)
 
 
+def test_reload_symbols_picks_up_new_list(tmp_path):
+    from quant.data.subscriptions import _write
+
+    collector = Collector(symbols=["BTCUSDT"], root=tmp_path, watch_subscriptions=True)
+    # A fresh collector remembers the current mtime, so nothing reloads yet.
+    assert collector.reload_symbols() is False
+
+    _write(["BTCUSDT", "SOLUSDT"], tmp_path)
+    # The filesystem timestamp may not change within the same clock tick.
+    path = tmp_path / "meta" / "symbols.json"
+    import os
+
+    stat = path.stat()
+    os.utime(path, (stat.st_atime, stat.st_mtime + 1))
+
+    assert collector.reload_symbols() is True
+    assert collector.symbols == ["BTCUSDT", "SOLUSDT"]
+    # The buffer is rebuilt so a removed symbol cannot keep writing.
+    assert set(collector._buffer) == {"BTCUSDT", "SOLUSDT"}
+    assert collector.reload_symbols() is False
+
+
+def test_reload_does_nothing_when_not_watching(tmp_path):
+    from quant.data.subscriptions import _write
+
+    collector = Collector(symbols=["BTCUSDT"], root=tmp_path)
+    _write(["BTCUSDT", "SOLUSDT"], tmp_path)
+
+    assert collector.reload_symbols() is False
+    assert collector.symbols == ["BTCUSDT"]
+
+
+def test_reload_flushes_pending_bars_before_switching(tmp_path):
+    from quant.data.subscriptions import _write
+
+    collector = Collector(symbols=["BTCUSDT"], root=tmp_path, watch_subscriptions=True)
+    collector.handle_message(_event("BTCUSDT"))
+
+    _write(["BTCUSDT", "SOLUSDT"], tmp_path)
+    import os
+
+    path = tmp_path / "meta" / "symbols.json"
+    stat = path.stat()
+    os.utime(path, (stat.st_atime, stat.st_mtime + 1))
+
+    assert collector.reload_symbols() is True
+    # Buffered bars must not be dropped when the subscription changes.
+    assert read_bars("BTCUSDT", root=tmp_path, interval="1m").height == 1
+
+
 def test_run_flushes_buffered_bars_on_exit(monkeypatch, tmp_path):
     collector = Collector(symbols=["BTCUSDT"], root=tmp_path)
 

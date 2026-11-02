@@ -40,6 +40,8 @@ from quant.data.store import (
     write_bars,
 )
 from quant.data.stream import WS_MARKET_BASE
+from quant.data.subscriptions import add_symbol, read_subscriptions, remove_symbol
+from quant.data.subscriptions import validate_symbol as check_symbol
 from quant.reporting import line_svg, sparkline
 from quant.strategies import registry
 
@@ -209,7 +211,9 @@ def fetch(
 
 @app.command()
 def watch(
-    symbol: list[str] = typer.Option(["BTCUSDT"], "--symbol", "-s", help="repeatable"),
+    symbol: list[str] | None = typer.Option(
+        None, "--symbol", "-s", help="repeatable; defaults to the saved subscription list"
+    ),
     interval: str = typer.Option(DEFAULT_INTERVAL, "--interval", "-i"),
     data_dir: Path | None = typer.Option(None, "--data-dir"),
     base_url: str = typer.Option(BINANCE_MARKET_BASE, "--base-url"),
@@ -224,15 +228,19 @@ def watch(
         24.0, "--verify-every-hours", help="0 disables the background quality check"
     ),
     verify_days: int = typer.Option(1, "--verify-days"),
+    follow_config: bool = typer.Option(
+        True, "--follow/--no-follow", help="pick up symbols added from the admin UI"
+    ),
     run_for: float = typer.Option(0.0, "--run-for", help="stop after N seconds, 0 = forever"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Stream live klines, backfill gaps and store closed bars."""
     _setup_logging(verbose)
     root = (data_dir or data_root()).expanduser().resolve()
+    symbols = [s.upper() for s in symbol] if symbol else read_subscriptions(root)
 
     collector = Collector(
-        symbols=symbol,
+        symbols=symbols,
         interval=interval,
         root=root,
         rest_base=base_url,
@@ -243,6 +251,7 @@ def watch(
         repair_window_minutes=repair_window_minutes,
         verify_every_hours=verify_every_hours,
         verify_days=verify_days,
+        watch_subscriptions=follow_config and not symbol,
     )
 
     console.print(
@@ -253,6 +262,65 @@ def watch(
         asyncio.run(collector.run(run_for=run_for or None))
 
     console.print(f"done: {collector.stats.as_dict()}")
+
+
+@app.command()
+def subscriptions(
+    add: str | None = typer.Option(None, "--add", help="symbol to validate and start collecting"),
+    remove: str | None = typer.Option(None, "--remove", help="stop collecting this symbol"),
+    check: str | None = typer.Option(None, "--check", help="only validate, do not save"),
+    data_dir: Path | None = typer.Option(None, "--data-dir"),
+    base_url: str = typer.Option(BINANCE_MARKET_BASE, "--base-url"),
+    updated_by: str | None = typer.Option(None, "--updated-by", help="audit label, e.g. user_3"),
+    as_json: bool = typer.Option(False, "--json", help="machine readable, used by the web UI"),
+) -> None:
+    """List, add or remove collected trading pairs.
+
+    Adding goes through the exchange first: an unknown or halted symbol is
+    rejected and nothing is written.
+    """
+    root = (data_dir or data_root()).expanduser().resolve()
+
+    try:
+        if add:
+            record = add_symbol(add, root=root, base_url=base_url, updated_by=updated_by)
+            message = f"{record['symbol']} 已加入采集列表（{record['status']}）"
+        elif remove:
+            record = remove_symbol(remove, root=root, updated_by=updated_by)
+            message = f"{remove.upper()} 已移出采集列表"
+        elif check:
+            specs = check_symbol(check, base_url=base_url)
+            record = {
+                "symbol": str(specs["symbol"]),
+                "base_asset": specs.get("base_asset"),
+                "quote_asset": specs.get("quote_asset"),
+                "status": specs.get("status"),
+            }
+            message = f"{record['symbol']} 可用"
+        else:
+            record = None
+            message = ""
+    except ValueError as exc:
+        if as_json:
+            typer.echo(json.dumps({"error": str(exc)}, ensure_ascii=False))
+        else:
+            console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from exc
+
+    symbols = read_subscriptions(root)
+    payload: dict[str, object] = {
+        "symbols": symbols,
+        "message": message,
+        "symbol": (record or {}).get("symbol") if isinstance(record, dict) else None,
+        "info": record,
+    }
+    if as_json:
+        typer.echo(json.dumps(payload, ensure_ascii=False))
+        return
+
+    if message:
+        console.print(f"[green]{message}[/green]")
+    console.print(f"collecting: {', '.join(symbols) or '(none)'}")
 
 
 @app.command()
@@ -287,6 +355,7 @@ def status(
                 "bars": row["bars"],
                 "first": _iso_utc(row["first"]),  # type: ignore[arg-type]
                 "last": _iso_utc(row["last"]),  # type: ignore[arg-type]
+                "close": row["close"],
                 "lag_seconds": None if lag is None else round(lag, 1),
                 "stale": stale,
                 "bytes": row["bytes"],
@@ -330,15 +399,17 @@ def status(
             f"symbols={', '.join(payload['collector']['symbols']) or '-'}"  # type: ignore[arg-type]
         )
     table = Table(title="symbols")
-    for col in ("symbol", "bars", "first", "last", "lag_s", "bytes"):
+    for col in ("symbol", "bars", "first", "last", "close", "lag_s", "bytes"):
         table.add_column(col, justify="right" if col != "symbol" else "left")
     for item in symbols:
         last = item["last"]
+        close = item["close"]
         table.add_row(
             str(item["symbol"]),
             f"{item['bars']:,}",  # type: ignore[arg-type]
             "-" if item["first"] is None else str(item["first"])[:16],  # type: ignore[arg-type]
             "-" if last is None else str(last)[:16],
+            "-" if close is None else f"{float(close):,.8g}",  # type: ignore[arg-type]
             "-" if item["lag_seconds"] is None else f"{item['lag_seconds']:.0f}",  # type: ignore[arg-type]
             f"{int(item['bytes']) / 1024 / 1024:.1f}M",  # type: ignore[arg-type]
         )

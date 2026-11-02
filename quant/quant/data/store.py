@@ -215,7 +215,7 @@ def symbol_coverage(
     exchange: str = DEFAULT_EXCHANGE,
     market_type: str = DEFAULT_MARKET_TYPE,
 ) -> list[dict[str, object]]:
-    """Bars, first/last timestamp and on-disk size for every stored symbol.
+    """Bars, first/last timestamp, last close and on-disk size per symbol.
 
     Only the newest and oldest month file are read: a symbol can hold years of
     monthly partitions, and the admin UI needs freshness, not a full scan.
@@ -243,6 +243,7 @@ def symbol_coverage(
                     "bars": 0,
                     "first": None,
                     "last": None,
+                    "close": None,
                     "bytes": 0,
                     "files": 0,
                 }
@@ -250,9 +251,15 @@ def symbol_coverage(
             continue
 
         first_df = pl.read_parquet(files[0], columns=["open_time"])
-        last_df = pl.read_parquet(files[-1], columns=["open_time"])
+        tail = pl.read_parquet(files[-1], columns=["open_time", "close"]).sort("open_time")
         first = first_df["open_time"].min() if not first_df.is_empty() else None
-        last = last_df["open_time"].max() if not last_df.is_empty() else None
+        last = None
+        close = None
+        if not tail.is_empty():
+            newest = tail.row(tail.height - 1, named=True)
+            last = newest["open_time"]
+            # The latest price the collector saw is the close of the newest bar.
+            close = float(newest["close"]) if newest["close"] is not None else None
 
         bars = 0
         size = 0
@@ -268,6 +275,7 @@ def symbol_coverage(
                 "bars": bars,
                 "first": first,
                 "last": last,
+                "close": close,
                 "bytes": size,
                 "files": len(files),
             }

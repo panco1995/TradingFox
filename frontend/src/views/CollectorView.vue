@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { Monitor, Refresh } from "@element-plus/icons-vue";
+import { Monitor, Plus, Refresh } from "@element-plus/icons-vue";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
-import { getCollectorStatus } from "@/api";
+import { addSymbol, getCollectorStatus, removeSymbol } from "@/api";
 import type { CollectorStatus, SymbolCoverage } from "@/types";
 
 const POLL_MS = 10_000;
@@ -12,6 +13,9 @@ const loading = ref(false);
 const errorMessage = ref("");
 const autoRefresh = ref(true);
 const lastLoadedAt = ref<Date | null>(null);
+const newSymbol = ref("");
+const adding = ref(false);
+const removingSymbol = ref("");
 let timer: number | undefined;
 
 const collector = computed(() => status.value?.collector ?? null);
@@ -40,11 +44,7 @@ const summaryCards = computed(() => {
   return [
     { label: "运行状态", value: stateLabel.value },
     { label: "心跳", value: fmtAge(info.heartbeat_age_seconds) },
-    { label: "已运行", value: fmtDuration(info.uptime_s) },
-    { label: "订阅交易对", value: String(info.symbols.length) },
-    { label: "写入根数", value: fmtCount(info.bars_written) },
     { label: "断线重连", value: fmtCount(info.connects) },
-    { label: "订阅", value: info.symbols.join(", ") || "-" },
     { label: "进程 PID", value: info.pid == null ? "-" : String(info.pid) },
   ];
 });
@@ -88,23 +88,55 @@ async function load() {
   }
 }
 
+// The backend asks the exchange first: an unknown or halted pair is rejected
+// and nothing is saved, so the list only ever contains tradable symbols.
+async function submitSymbol() {
+  const symbol = newSymbol.value.trim().toUpperCase();
+  if (!symbol) {
+    ElMessage.warning("请输入交易对，例如 SOLUSDT");
+    return;
+  }
+  adding.value = true;
+  try {
+    const result = await addSymbol(symbol);
+    ElMessage.success(result.message || `${symbol} 已加入采集列表`);
+    newSymbol.value = "";
+    await load();
+  } catch (error) {
+    ElMessage.error((error as Error).message);
+  } finally {
+    adding.value = false;
+  }
+}
+
+async function dropSymbol(row: SymbolCoverage) {
+  try {
+    await ElMessageBox.confirm(
+      `停止采集 ${row.symbol}？已下载的历史数据会保留，可以随时重新加回来。`,
+      "移除交易对",
+      { type: "warning", confirmButtonText: "停止采集", cancelButtonText: "取消" }
+    );
+  } catch {
+    return;
+  }
+
+  removingSymbol.value = row.symbol;
+  try {
+    const result = await removeSymbol(row.symbol);
+    ElMessage.success(result.message || `${row.symbol} 已移出采集列表`);
+    await load();
+  } catch (error) {
+    ElMessage.error((error as Error).message);
+  } finally {
+    removingSymbol.value = "";
+  }
+}
+
 function fmtAge(seconds: number | null): string {
   if (seconds == null) return "-";
   if (seconds < 60) return `${seconds.toFixed(0)} 秒前`;
   if (seconds < 3600) return `${(seconds / 60).toFixed(1)} 分钟前`;
   return `${(seconds / 3600).toFixed(1)} 小时前`;
-}
-
-function fmtDuration(seconds: number | null): string {
-  if (seconds == null) return "-";
-  const total = Math.floor(seconds);
-  const days = Math.floor(total / 86400);
-  const hours = Math.floor((total % 86400) / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  if (days > 0) return `${days} 天 ${hours} 小时`;
-  if (hours > 0) return `${hours} 小时 ${minutes} 分`;
-  if (minutes > 0) return `${minutes} 分 ${total % 60} 秒`;
-  return `${total} 秒`;
 }
 
 function fmtCount(value: number | null): string {
@@ -126,6 +158,17 @@ function fmtSize(bytes: number): string {
 
 function fmtTime(iso: string | null): string {
   return iso ? iso.slice(0, 19).replace("T", " ") : "-";
+}
+
+// Crypto prices span many orders of magnitude: BTC needs 2 decimals, small
+// alts need 8. Show significant digits instead of a fixed precision.
+function fmtPrice(value: number | null): string {
+  if (value == null) return "-";
+  if (value >= 1000) {
+    return value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  if (value >= 1) return value.toFixed(4);
+  return value.toPrecision(4).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 function rowClass({ row }: { row: SymbolCoverage }): string {
@@ -217,6 +260,33 @@ function lagType(row: SymbolCoverage): "success" | "warning" | "danger" | "info"
     <el-card class="panel" shadow="never">
       <template #header>
         <div class="card-title">
+          <el-icon><Plus /></el-icon>
+          添加交易对
+          <span class="aside">先向交易所校验，可用才写入</span>
+        </div>
+      </template>
+
+      <div class="add-symbol">
+        <el-input
+          v-model="newSymbol"
+          placeholder="例如 SOLUSDT"
+          maxlength="24"
+          clearable
+          style="max-width: 260px"
+          @keyup.enter="submitSymbol"
+        >
+          <template #prepend>交易对</template>
+        </el-input>
+        <el-button type="primary" :loading="adding" @click="submitSymbol">查询并添加</el-button>
+        <span class="add-hint">
+          添加后采集器会自动重连并开始接收该交易对，无需重启；历史数据需要用 make fetch 或回填命令补。
+        </span>
+      </div>
+    </el-card>
+
+    <el-card class="panel" shadow="never">
+      <template #header>
+        <div class="card-title">
           交易对更新时间
           <span class="aside">共 {{ rows.length }} 个，按交易日历 UTC</span>
         </div>
@@ -236,6 +306,12 @@ function lagType(row: SymbolCoverage): "success" | "warning" | "danger" | "info"
               <el-tag v-if="row.subscribed" size="small" type="success" effect="plain">订阅中</el-tag>
               <el-tag v-else size="small" type="info" effect="plain">未订阅</el-tag>
             </div>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="最新价" min-width="130" align="right">
+          <template #default="{ row }">
+            <span class="price">{{ fmtPrice(row.close) }}</span>
           </template>
         </el-table-column>
 
@@ -272,7 +348,7 @@ function lagType(row: SymbolCoverage): "success" | "warning" | "danger" | "info"
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="90" align="right">
+        <el-table-column label="操作" width="150" align="right">
           <template #default="{ row }">
             <el-button
               link
@@ -280,6 +356,16 @@ function lagType(row: SymbolCoverage): "success" | "warning" | "danger" | "info"
               @click="$router.push({ name: 'klines', query: { symbol: row.symbol } })"
             >
               看 K 线
+            </el-button>
+            <el-button
+              link
+              size="small"
+              type="danger"
+              :loading="removingSymbol === row.symbol"
+              :disabled="!row.subscribed"
+              @click="dropSymbol(row)"
+            >
+              移除
             </el-button>
           </template>
         </el-table-column>
@@ -294,6 +380,18 @@ function lagType(row: SymbolCoverage): "success" | "warning" | "danger" | "info"
 }
 
 .refresh-note {
+  color: var(--app-muted);
+  font-size: 12px;
+}
+
+.add-symbol {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.add-hint {
   color: var(--app-muted);
   font-size: 12px;
 }
@@ -316,6 +414,13 @@ function lagType(row: SymbolCoverage): "success" | "warning" | "danger" | "info"
 .mono {
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
   font-size: 12px;
+}
+
+.price {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--app-text);
 }
 
 :deep(.row-stale) {

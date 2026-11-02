@@ -123,11 +123,24 @@ export interface SymbolCoverage {
   bars: number;
   first: string | null;
   last: string | null;
+  close: number | null;
   lag_seconds: number | null;
   stale: boolean | null;
   bytes: number;
   files: number;
   subscribed: boolean;
+}
+
+export interface SymbolMutation {
+  symbols: string[];
+  message: string;
+  symbol: string | null;
+  info?: {
+    symbol?: string;
+    base_asset?: string;
+    quote_asset?: string;
+    status?: string;
+  } | null;
 }
 
 export interface CollectorStatus {
