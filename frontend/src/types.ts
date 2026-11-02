@@ -116,6 +116,7 @@ export interface CollectorInfo {
   backfills: number | null;
   idle_s: number | null;
   symbols: string[];
+  follows_config?: boolean | null;
 }
 
 export interface SymbolCoverage {
@@ -129,6 +130,45 @@ export interface SymbolCoverage {
   bytes: number;
   files: number;
   subscribed: boolean;
+}
+
+export interface BackfillSpan {
+  start: string;
+  end: string;
+  missing_bars: number;
+}
+
+export interface BackfillPlan {
+  symbol: string;
+  interval: string;
+  window_start: string;
+  window_end: string;
+  bars_present: number;
+  bars_expected: number;
+  missing_bars: number;
+  ratio: number;
+  complete: boolean;
+  missing_head: boolean;
+  missing_tail: boolean;
+  spans: BackfillSpan[];
+}
+
+export interface BackfillJob {
+  symbol: string;
+  state: "pending" | "running" | "done" | "error";
+  started_at: string;
+  ended_at: string | null;
+  result: {
+    symbol?: string;
+    fetched_bars?: number;
+    rows_added?: number;
+    rows_updated?: number;
+    spans_done?: number;
+    skipped?: boolean;
+    error?: string | null;
+    before?: BackfillPlan;
+  } | null;
+  error?: string;
 }
 
 export interface SymbolMutation {
@@ -147,6 +187,8 @@ export interface CollectorStatus {
   interval: string;
   now: string;
   collector: CollectorInfo;
+  configured_symbols?: string[];
+  warning?: string;
   symbols: SymbolCoverage[];
 }
 

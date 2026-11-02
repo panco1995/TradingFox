@@ -27,6 +27,8 @@ from quant.backtest.market import load_market
 from quant.backtest.metrics import compute_metrics, monthly_returns
 from quant.backtest.report import result_payload, save_report
 from quant.config import BINANCE_MARKET_BASE, DEFAULT_INTERVAL, data_root
+from quant.data.backfill import plan_backfill
+from quant.data.backfiller import backfill_symbol
 from quant.data.binance import INTERVAL_MS, BinanceError, BinanceMarketData
 from quant.data.collector import Collector
 from quant.data.heartbeat import heartbeat_age_seconds, is_running, read_heartbeat
@@ -210,6 +212,70 @@ def fetch(
 
 
 @app.command()
+def backfill(
+    symbol: str = typer.Option("BTCUSDT", "--symbol", "-s"),
+    days: int = typer.Option(365, "--days", "-d"),
+    interval: str = typer.Option(DEFAULT_INTERVAL, "--interval", "-i"),
+    data_dir: Path | None = typer.Option(None, "--data-dir"),
+    base_url: str = typer.Option(BINANCE_MARKET_BASE, "--base-url"),
+    plan_only: bool = typer.Option(
+        False, "--plan", help="only report what is missing, download nothing"
+    ),
+    force: bool = typer.Option(False, "--force", help="re-download even when complete"),
+    as_json: bool = typer.Option(False, "--json", help="machine readable, used by the web UI"),
+) -> None:
+    """Fill missing history for one symbol, skipping what is already there."""
+    _setup_logging(False)
+    root = (data_dir or data_root()).expanduser().resolve()
+    if interval not in INTERVAL_MS:
+        raise typer.BadParameter(f"unsupported interval: {interval}")
+    if days < 1 or days > 3650:
+        raise typer.BadParameter("days must be between 1 and 3650")
+
+    if plan_only:
+        plan = plan_backfill(symbol, days=days, interval=interval, root=root)
+        if as_json:
+            typer.echo(json.dumps(plan.as_dict(), ensure_ascii=False))
+            return
+        state = "complete" if plan.complete else f"missing {plan.missing_bars:,} bars"
+        console.print(
+            f"{plan.symbol} {interval} {days}d: {state} "
+            f"({plan.bars_present:,}/{plan.bars_expected:,}, {plan.ratio:.2%})"
+        )
+        for span in plan.spans:
+            console.print(f"  {span.start:%Y-%m-%d %H:%M} -> {span.end:%Y-%m-%d %H:%M}")
+        return
+
+    def _progress(index: int, total: int, start: datetime, stop: datetime) -> None:
+        console.print(f"  [{index}/{total}] {start:%Y-%m-%d %H:%M} -> {stop:%Y-%m-%d %H:%M}")
+
+    result = backfill_symbol(
+        symbol,
+        days=days,
+        interval=interval,
+        root=root,
+        base_url=base_url,
+        force=force,
+        progress=None if as_json else _progress,
+    )
+
+    if as_json:
+        typer.echo(json.dumps(result.as_dict(), ensure_ascii=False))
+    elif result.error:
+        console.print(f"[red]{result.symbol}: {result.error}[/red]")
+    elif result.skipped:
+        console.print(f"[green]{result.symbol}[/green] already complete, nothing to do")
+    else:
+        console.print(
+            f"[green]{result.symbol}[/green] added={result.rows_added} "
+            f"updated={result.rows_updated} spans={result.spans_done}"
+        )
+
+    if not result.ok:
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def watch(
     symbol: list[str] | None = typer.Option(
         None, "--symbol", "-s", help="repeatable; defaults to the saved subscription list"
@@ -340,6 +406,7 @@ def status(
     subscribed = set()
     if isinstance(beat, dict) and isinstance(beat.get("symbols"), list):
         subscribed = {str(s).upper() for s in beat["symbols"]}
+    configured = [s.upper() for s in read_subscriptions(root)]
 
     step = timedelta(milliseconds=INTERVAL_MS.get(interval, 60_000))
     symbols: list[dict[str, object]] = []
@@ -382,9 +449,21 @@ def status(
             "backfills": (beat or {}).get("backfills"),
             "idle_s": (beat or {}).get("idle_s"),
             "symbols": sorted(subscribed),
+            "follows_config": (beat or {}).get("follows_config"),
         },
+        "configured_symbols": configured,
         "symbols": symbols,
     }
+
+    # A collector started with explicit --symbol flags ignores symbols.json, and
+    # the UI would otherwise just show pairs as "not subscribed" with no reason.
+    if running and configured and sorted(configured) != sorted(subscribed):
+        missing = [s for s in configured if s not in subscribed]
+        payload["warning"] = (
+            "采集器没有按配置文件运行"
+            + (f"，未订阅：{', '.join(missing)}" if missing else "")
+            + "。请用 `make watch`（不带 --symbol）重启。"
+        )
 
     if as_json:
         typer.echo(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
@@ -392,6 +471,8 @@ def status(
 
     state = "running" if running else ("stale" if beat else "not started")
     console.print(f"collector: [bold]{state}[/bold]  interval={interval}  root={root}")
+    if payload.get("warning"):
+        console.print(f"[yellow]{payload['warning']}[/yellow]")
     if running and age is not None:
         console.print(
             f"  heartbeat {age:.0f}s ago  pid={payload['collector']['pid']}  "

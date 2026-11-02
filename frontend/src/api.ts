@@ -1,4 +1,6 @@
 import type {
+  BackfillJob,
+  BackfillPlan,
   BacktestReport,
   BacktestRequest,
   CollectorStatus,
@@ -140,6 +142,28 @@ export function addSymbol(symbol: string): Promise<SymbolMutation> {
 
 export function removeSymbol(symbol: string): Promise<SymbolMutation> {
   return request(`/symbols/${encodeURIComponent(symbol)}`, { method: "DELETE" });
+}
+
+// Backfill runs as a background job: starting returns immediately, then the
+// caller polls getBackfillJob until it leaves pending/running.
+export function getBackfillPlan(symbol: string, days = 365): Promise<BackfillPlan> {
+  const params = new URLSearchParams({ symbol, days: String(days) });
+  return request(`/backfill/plan?${params}`);
+}
+
+export function startBackfill(
+  symbol: string,
+  days = 365,
+  force = false
+): Promise<BackfillJob> {
+  return request("/backfill", {
+    method: "POST",
+    body: JSON.stringify({ symbol, days, force }),
+  });
+}
+
+export function getBackfillJob(symbol: string): Promise<BackfillJob> {
+  return request(`/backfill/${encodeURIComponent(symbol)}`);
 }
 
 export function getStrategies(): Promise<StrategySpec[]> {

@@ -357,6 +357,57 @@ func (c *Client) Symbols(
 	return json.RawMessage(out), nil
 }
 
+// BackfillPlan reports what a backfill would need to download.
+func (c *Client) BackfillPlan(
+	ctx context.Context, symbol string, days int, interval string,
+) (json.RawMessage, error) {
+	return c.backfillCall(ctx, symbol, days, interval, true, false)
+}
+
+// Backfill fills only the missing spans. Long-running: callers should run it
+// outside the request lifecycle.
+func (c *Client) Backfill(
+	ctx context.Context, symbol string, days int, interval string, force bool,
+) (json.RawMessage, error) {
+	return c.backfillCall(ctx, symbol, days, interval, false, force)
+}
+
+func (c *Client) backfillCall(
+	ctx context.Context, symbol string, days int, interval string, planOnly, force bool,
+) (json.RawMessage, error) {
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	if !symbolPattern.MatchString(symbol) {
+		return nil, &Error{Message: "交易对格式不正确，例如 BTCUSDT", ExitCode: 2}
+	}
+	if interval == "" {
+		interval = "1m"
+	}
+	if err := ValidateInterval(interval); err != nil {
+		return nil, &Error{Message: err.Error(), ExitCode: 2}
+	}
+	if days < 1 || days > 3650 {
+		return nil, &Error{Message: "天数需要在 1 到 3650 之间", ExitCode: 2}
+	}
+
+	args := []string{"backfill", "--symbol", symbol, "--days", strconv.Itoa(days),
+		"--interval", interval, "--json"}
+	if planOnly {
+		args = append(args, "--plan")
+	}
+	if force && !planOnly {
+		args = append(args, "--force")
+	}
+
+	out, err := c.run(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	if !json.Valid(out) {
+		return nil, errors.New("python CLI returned malformed JSON for backfill")
+	}
+	return json.RawMessage(out), nil
+}
+
 func scalarString(value any) string {
 	switch v := value.(type) {
 	case string:

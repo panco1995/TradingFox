@@ -45,8 +45,8 @@ fmt:  ## auto-format python code
 fetch:  ## fetch last 2 days of BTCUSDT 1m bars
 	cd quant && .venv/bin/python -m quant.cli fetch --symbol BTCUSDT --days 2
 
-watch:  ## stream live bars (ctrl-c to stop)
-	cd quant && .venv/bin/python -m quant.cli watch --symbol BTCUSDT --symbol ETHUSDT
+watch:  ## stream live bars for the subscribed pairs (ctrl-c to stop)
+	cd quant && .venv/bin/python -m quant.cli watch
 
 inspect:  ## summarise stored BTCUSDT bars
 	cd quant && .venv/bin/python -m quant.cli inspect --symbol BTCUSDT --days 2 --svg ../data/chart.svg

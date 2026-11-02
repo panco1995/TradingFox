@@ -40,6 +40,8 @@ type Quant interface {
 	KlineSymbols(ctx context.Context, interval string) (json.RawMessage, error)
 	CollectorStatus(ctx context.Context, interval string) (json.RawMessage, error)
 	Symbols(ctx context.Context, action, symbol, updatedBy string) (json.RawMessage, error)
+	BackfillPlan(ctx context.Context, symbol string, days int, interval string) (json.RawMessage, error)
+	Backfill(ctx context.Context, symbol string, days int, interval string, force bool) (json.RawMessage, error)
 }
 
 // UserStore is the user persistence the handlers need.
@@ -85,6 +87,8 @@ type Server struct {
 	setupMu sync.Mutex
 	mu      sync.Mutex
 	sems    map[int64]chan struct{} // one running backtest per user
+
+	backfills *backfillRegistry
 }
 
 func New(quant Quant, logger *slog.Logger, cfg Config) *Server {
@@ -95,10 +99,11 @@ func New(quant Quant, logger *slog.Logger, cfg Config) *Server {
 		logger.Warn("authentication is disabled; this must only happen in tests")
 	}
 	return &Server{
-		quant: quant,
-		log:   logger,
-		cfg:   cfg,
-		sems:  make(map[int64]chan struct{}),
+		quant:     quant,
+		log:       logger,
+		cfg:       cfg,
+		sems:      make(map[int64]chan struct{}),
+		backfills: newBackfillRegistry(),
 	}
 }
 
@@ -124,6 +129,10 @@ func (s *Server) Router() *gin.Engine {
 	secured.GET("/symbols", s.handleListSymbols)
 	secured.POST("/symbols", s.handleAddSymbol)
 	secured.DELETE("/symbols/:symbol", s.handleRemoveSymbol)
+	secured.GET("/backfill/plan", s.handleBackfillPlan)
+	secured.GET("/backfill", s.handleListBackfills)
+	secured.POST("/backfill", s.handleStartBackfill)
+	secured.GET("/backfill/:symbol", s.handleBackfillStatus)
 	secured.POST("/backtests", s.handleBacktest)
 	secured.GET("/backtests", s.handleListRuns)
 	secured.GET("/backtests/:id", s.handleGetRun)

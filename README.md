@@ -120,6 +120,10 @@ Vue 后台 (:5173)  --HTTP/JSON + Cookie-->  Go Gin API (:8080)  --子进程--> 
 | GET | `/api/symbols` | 采集器当前订阅的交易对 |
 | POST | `/api/symbols` | 添加交易对；先向交易所校验，可用才写入 |
 | DELETE | `/api/symbols/:symbol` | 停止采集该交易对（保留历史数据） |
+| GET | `/api/backfill/plan?symbol=SOLUSDT&days=365` | 检查历史完整性，只报告缺口，不下载 |
+| POST | `/api/backfill` | 启动回填任务（`202`），只补缺失区间 |
+| GET | `/api/backfill/:symbol` | 回填任务状态 |
+| GET | `/api/backfill` | 全部回填任务 |
 | POST | `/api/backtests` | 同步执行回测，返回绩效与曲线 |
 | GET | `/api/backtests?limit=20` | 当前用户最近的回测 |
 | GET | `/api/backtests/:id` | 当前用户的单次回测完整结果 |
@@ -292,6 +296,36 @@ cd quant
 .venv/bin/python -m quant.cli fetch -s BTCUSDT -d 365   # 约 52 万根，几分钟
 ```
 
+## 回填缺失历史
+
+后台「数据采集」页面每个交易对后面有「回填K线数据(1年)」按钮。它**先检测再下载**：
+
+1. 对比存储与目标窗口（默认近 365 天），算出缺多少根、缺在哪几段；
+2. 已完整就直接提示，一根都不下载（实测 0.3 秒返回）；
+3. 有缺口才弹出确认，然后**只补缺失区间**。
+
+一年 1 分钟约 52.5 万根，全量重下要几分钟，而只补缺口通常快得多。
+
+```bash
+cd quant
+.venv/bin/python -m quant.cli backfill -s SOLUSDT -d 365 --plan    # 只看缺什么
+.venv/bin/python -m quant.cli backfill -s SOLUSDT -d 365          # 只补缺口
+.venv/bin/python -m quant.cli backfill -s SOLUSDT -d 365 --force  # 强制重下
+```
+
+判定规则：
+
+| 情况 | 处理 |
+|---|---|
+| 窗口内没有缺口 | 跳过，不下载 |
+| 头部缺（历史太短） | 补 `窗口起点 → 最早一根` |
+| 尾部缺（采集停了） | 补 `最新一根 → 当前` |
+| 中间有洞 | 每个洞单独补 |
+| 缺 5 根以内 | 视为完整，不值得为几分钟的行情重跑一年 |
+
+> 采集器同时在写同一批 Parquet，所以**同一交易对不能并发回填**。重复请求会返回 `409`，
+> 页面按钮在任务运行期间显示「回填中」。
+
 ## 交易对管理
 
 采集哪些交易对保存在 `data/meta/symbols.json`，后台「数据采集」页面可以直接增删。
@@ -312,7 +346,10 @@ cd quant
 `watch` 默认从配置文件读取交易对，并**监视文件变化**：后台添加后采集器会在几秒内自动重连并开始接收，
 不需要重启进程。移除只是停止订阅，已经落盘的 Parquet 保留，随时可以加回来。
 
-显式传 `--symbol` 启动时会忽略配置文件（`--no-follow` 效果），适合临时调试。
+> **不要用 `--symbol` 重启采集器。** 显式传 `--symbol` 会忽略 `symbols.json`，
+> 后台添加的交易对就不会被采集，页面上只会显示「未订阅」。用 `make watch` 或
+> `quant.cli watch`（不带 `--symbol`）才能跟随配置。如果误用了，数据采集页面会显示红色
+> 提示，说明哪些交易对没被采集。
 
 ## 数据采集状态
 

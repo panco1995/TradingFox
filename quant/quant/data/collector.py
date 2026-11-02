@@ -183,6 +183,7 @@ class Collector:
             "pid": os.getpid(),
             "interval": self.interval,
             "symbols": self.symbols,
+            "follows_config": self.watch_subscriptions,
             "uptime_s": stats["uptime_s"],
             "connects": stats["connects"],
             "messages": stats["messages"],

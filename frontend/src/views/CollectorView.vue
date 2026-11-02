@@ -3,10 +3,19 @@ import { Monitor, Plus, Refresh } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
-import { addSymbol, getCollectorStatus, removeSymbol } from "@/api";
-import type { CollectorStatus, SymbolCoverage } from "@/types";
+import {
+  addSymbol,
+  getBackfillJob,
+  getBackfillPlan,
+  getCollectorStatus,
+  removeSymbol,
+  startBackfill,
+} from "@/api";
+import type { BackfillJob, CollectorStatus, SymbolCoverage } from "@/types";
 
 const POLL_MS = 10_000;
+const BACKFILL_POLL_MS = 3_000;
+const BACKFILL_DAYS = 365;
 
 const status = ref<CollectorStatus | null>(null);
 const loading = ref(false);
@@ -16,7 +25,9 @@ const lastLoadedAt = ref<Date | null>(null);
 const newSymbol = ref("");
 const adding = ref(false);
 const removingSymbol = ref("");
+const backfilling = ref<Record<string, BackfillJob>>({});
 let timer: number | undefined;
+let backfillTimer: number | undefined;
 
 const collector = computed(() => status.value?.collector ?? null);
 const rows = computed(() => status.value?.symbols ?? []);
@@ -56,6 +67,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopTimer();
+  stopBackfillPolling();
 });
 
 function startTimer() {
@@ -109,6 +121,105 @@ async function submitSymbol() {
   }
 }
 
+// Backfill checks completeness first: a symbol that is already covered costs one
+// cheap read, and nothing is downloaded. Only the missing spans are fetched.
+async function runBackfill(row: SymbolCoverage) {
+  const symbol = row.symbol;
+  try {
+    const plan = await getBackfillPlan(symbol, BACKFILL_DAYS);
+    if (plan.complete) {
+      ElMessage.success(
+        `${symbol} 近 ${BACKFILL_DAYS} 天数据已完整（${plan.bars_present.toLocaleString()} 根），无需回填`
+      );
+      return;
+    }
+    try {
+      await ElMessageBox.confirm(
+        `${symbol} 缺少约 ${plan.missing_bars.toLocaleString()} 根 1 分钟 K 线` +
+          `（已有 ${(plan.ratio * 100).toFixed(1)}%）。只补缺失部分，可能需要几分钟。`,
+        "回填近一年数据",
+        { type: "warning", confirmButtonText: "开始回填", cancelButtonText: "取消" }
+      );
+    } catch {
+      return;
+    }
+  } catch (error) {
+    ElMessage.error((error as Error).message);
+    return;
+  }
+
+  try {
+    const job = await startBackfill(symbol, BACKFILL_DAYS);
+    backfilling.value = { ...backfilling.value, [symbol]: job };
+    startBackfillPolling();
+    ElMessage.info(`${symbol} 已开始回填，完成后会提示`);
+  } catch (error) {
+    ElMessage.error((error as Error).message);
+  }
+}
+
+function startBackfillPolling() {
+  if (backfillTimer) return;
+  backfillTimer = window.setInterval(pollBackfills, BACKFILL_POLL_MS);
+}
+
+function stopBackfillPolling() {
+  if (backfillTimer) window.clearInterval(backfillTimer);
+  backfillTimer = undefined;
+}
+
+async function pollBackfills() {
+  const active = Object.entries(backfilling.value).filter(
+    ([, job]) => job.state === "pending" || job.state === "running"
+  );
+  if (active.length === 0) {
+    stopBackfillPolling();
+    return;
+  }
+
+  for (const [symbol] of active) {
+    try {
+      const job = await getBackfillJob(symbol);
+      backfilling.value = { ...backfilling.value, [symbol]: job };
+      if (job.state === "done") {
+        const added = job.result?.rows_added ?? 0;
+        ElMessage.success(
+          added > 0 ? `${symbol} 回填完成，新增 ${added.toLocaleString()} 根` : `${symbol} 无需回填`
+        );
+        await load();
+      } else if (job.state === "error") {
+        ElMessage.error(`${symbol} 回填失败：${job.error ?? job.result?.error ?? "未知错误"}`);
+      }
+    } catch (error) {
+      // A 404 means the job is gone (server restart); stop polling it.
+      if ((error as { status?: number }).status === 404) {
+        const { [symbol]: _dropped, ...rest } = backfilling.value;
+        backfilling.value = rest;
+      }
+    }
+  }
+
+  const stillActive = Object.values(backfilling.value).some(
+    (job) => job.state === "pending" || job.state === "running"
+  );
+  if (!stillActive) stopBackfillPolling();
+}
+
+function isBackfilling(symbol: string): boolean {
+  const job = backfilling.value[symbol];
+  return job?.state === "pending" || job?.state === "running";
+}
+
+// Surfaces the last backfill outcome per symbol, so a user who reloads the page
+// mid-job can still tell whether it finished.
+function backfillNote(symbol: string): string {
+  const job = backfilling.value[symbol];
+  if (!job) return "";
+  if (job.state === "pending" || job.state === "running") return "回填中…";
+  if (job.state === "error") return "回填失败";
+  return job.result?.skipped ? "已完整" : "回填完成";
+}
+
 async function dropSymbol(row: SymbolCoverage) {
   try {
     await ElMessageBox.confirm(
@@ -150,6 +261,16 @@ function fmtLag(seconds: number | null): string {
   return `${(seconds / 3600).toFixed(1)} 小时`;
 }
 
+// Second line under the timestamp: makes the column self-explanatory instead of
+// repeating "UTC" on every row (the unit now lives in the header).
+function fmtAgo(seconds: number | null): string {
+  if (seconds == null) return "-";
+  if (seconds < 120) return `${seconds.toFixed(0)} 秒前`;
+  if (seconds < 7200) return `${(seconds / 60).toFixed(0)} 分钟前`;
+  if (seconds < 172800) return `${(seconds / 3600).toFixed(1)} 小时前`;
+  return `${(seconds / 86400).toFixed(0)} 天前`;
+}
+
 function fmtSize(bytes: number): string {
   if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -158,6 +279,10 @@ function fmtSize(bytes: number): string {
 
 function fmtTime(iso: string | null): string {
   return iso ? iso.slice(0, 19).replace("T", " ") : "-";
+}
+
+function fmtDate(iso: string | null): string {
+  return iso ? iso.slice(0, 10) : "-";
 }
 
 // Crypto prices span many orders of magnitude: BTC needs 2 decimals, small
@@ -210,6 +335,15 @@ function lagType(row: SymbolCoverage): "success" | "warning" | "danger" | "info"
     <el-alert
       v-if="errorMessage"
       :title="errorMessage"
+      type="error"
+      show-icon
+      :closable="false"
+      style="margin-bottom: 16px"
+    />
+
+    <el-alert
+      v-if="status?.warning"
+      :title="status.warning"
       type="error"
       show-icon
       :closable="false"
@@ -299,7 +433,7 @@ function lagType(row: SymbolCoverage): "success" | "warning" | "danger" | "info"
         :row-class-name="rowClass"
         empty-text="本地还没有行情数据"
       >
-        <el-table-column label="交易对" min-width="130">
+        <el-table-column label="交易对" min-width="170">
           <template #default="{ row }">
             <div class="symbol-cell">
               <span class="symbol-name">{{ row.symbol }}</span>
@@ -309,20 +443,20 @@ function lagType(row: SymbolCoverage): "success" | "warning" | "danger" | "info"
           </template>
         </el-table-column>
 
-        <el-table-column label="最新价" min-width="130" align="right">
+        <el-table-column label="最新价" min-width="118" align="left">
           <template #default="{ row }">
             <span class="price">{{ fmtPrice(row.close) }}</span>
           </template>
         </el-table-column>
 
-        <el-table-column label="最后更新" min-width="170">
+        <el-table-column label="最后更新 (UTC)" min-width="156">
           <template #default="{ row }">
             <div class="mono">{{ fmtTime(row.last) }}</div>
-            <div class="cell-sub">UTC</div>
+            <div class="cell-sub">{{ fmtAgo(row.lag_seconds) }}</div>
           </template>
         </el-table-column>
 
-        <el-table-column label="延迟" width="110" align="right">
+        <el-table-column label="延迟" min-width="92" align="left">
           <template #default="{ row }">
             <el-tag size="small" :type="lagType(row)" effect="plain">
               {{ fmtLag(row.lag_seconds) }}
@@ -330,43 +464,57 @@ function lagType(row: SymbolCoverage): "success" | "warning" | "danger" | "info"
           </template>
         </el-table-column>
 
-        <el-table-column label="最早数据" min-width="170">
+        <el-table-column label="起始日期" min-width="104" align="left">
           <template #default="{ row }">
-            <div class="mono">{{ fmtTime(row.first) }}</div>
-            <div class="cell-sub">UTC</div>
+            <span class="mono">{{ fmtDate(row.first) }}</span>
           </template>
         </el-table-column>
 
-        <el-table-column label="根数" width="110" align="right">
-          <template #default="{ row }">{{ fmtCount(row.bars) }}</template>
+        <el-table-column label="根数" min-width="116" align="left">
+          <template #default="{ row }">
+            <div>{{ fmtCount(row.bars) }}</div>
+            <div v-if="backfillNote(row.symbol)" class="cell-sub backfill-note">
+              {{ backfillNote(row.symbol) }}
+            </div>
+          </template>
         </el-table-column>
 
-        <el-table-column label="文件 / 大小" width="130" align="right">
+        <el-table-column label="大小" min-width="94" align="left">
           <template #default="{ row }">
             <div>{{ row.files }} 个</div>
             <div class="cell-sub">{{ fmtSize(row.bytes) }}</div>
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="150" align="right">
+        <el-table-column label="操作" min-width="214" align="left">
           <template #default="{ row }">
-            <el-button
-              link
-              size="small"
-              @click="$router.push({ name: 'klines', query: { symbol: row.symbol } })"
-            >
-              看 K 线
-            </el-button>
-            <el-button
-              link
-              size="small"
-              type="danger"
-              :loading="removingSymbol === row.symbol"
-              :disabled="!row.subscribed"
-              @click="dropSymbol(row)"
-            >
-              移除
-            </el-button>
+            <div class="row-actions">
+              <el-button
+                size="small"
+                type="primary"
+                @click="$router.push({ name: 'klines', query: { symbol: row.symbol } })"
+              >
+                K 线
+              </el-button>
+              <el-button
+                size="small"
+                plain
+                :loading="isBackfilling(row.symbol)"
+                @click="runBackfill(row)"
+              >
+                {{ isBackfilling(row.symbol) ? "回填中" : "回填" }}
+              </el-button>
+              <el-button
+                size="small"
+                type="danger"
+                plain
+                :loading="removingSymbol === row.symbol"
+                :disabled="!row.subscribed"
+                @click="dropSymbol(row)"
+              >
+                移除
+              </el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -421,6 +569,85 @@ function lagType(row: SymbolCoverage): "success" | "warning" | "danger" | "info"
   font-size: 12.5px;
   font-weight: 600;
   color: var(--app-text);
+}
+
+.backfill-note {
+  color: var(--app-green);
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+}
+
+.row-actions .el-button {
+  margin-left: 0;
+  /* Small buttons in a dense table read better with their own surface than as
+     bare text on the row background. */
+  min-width: 52px;
+}
+
+/* The dark theme leaves the default button background almost identical to the
+   table row, so a plain button looks like a label. Give it a real surface.
+   The primary (solid) and danger (red) buttons keep their own colours. */
+.row-actions :deep(.el-button:not(.el-button--primary):not(.el-button--danger)) {
+  background-color: #1a2634;
+  border-color: #2c3d50;
+  color: var(--app-text);
+}
+
+.row-actions :deep(.el-button:not(.el-button--primary):not(.el-button--danger):hover) {
+  background-color: #223143;
+  border-color: #3a5069;
+  color: #fff;
+}
+
+.row-actions :deep(.el-button--danger.is-plain) {
+  background-color: rgba(248, 113, 113, 0.1);
+  border-color: rgba(248, 113, 113, 0.45);
+  color: var(--app-red);
+}
+
+.row-actions :deep(.el-button.is-disabled) {
+  background-color: #131b25;
+  border-color: #1e2a38;
+  color: #55677d;
+}
+
+.row-actions :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
+/* Tighten the table: the previous layout stretched cells with min-width and
+   left large empty bands between short values. */
+:deep(.el-table) {
+  font-size: 12.5px;
+}
+
+:deep(.el-table th.el-table__cell) {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--app-muted);
+  letter-spacing: 0.02em;
+  padding: 8px 0;
+}
+
+/* Keep headers left-aligned with the values below them; el-table's `align`
+   only applies to body cells. */
+:deep(.el-table th.el-table__cell > .cell) {
+  text-align: left;
+}
+
+:deep(.el-table td.el-table__cell) {
+  padding: 7px 0;
+}
+
+:deep(.el-table .cell) {
+  padding-left: 12px;
+  padding-right: 12px;
+  line-height: 1.45;
 }
 
 :deep(.row-stale) {

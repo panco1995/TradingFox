@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -16,19 +17,24 @@ import (
 )
 
 type fakeQuant struct {
-	strategies    json.RawMessage
-	result        json.RawMessage
-	klines        json.RawMessage
-	symbols       json.RawMessage
-	status        json.RawMessage
-	symbolsResult json.RawMessage
-	err           error
-	got           quantcli.BacktestRequest
-	gotKline      quantcli.KlineQuery
-	gotInterval   string
-	gotAction     string
-	gotSymbol     string
-	gotUpdatedBy  string
+	strategies     json.RawMessage
+	result         json.RawMessage
+	klines         json.RawMessage
+	symbols        json.RawMessage
+	status         json.RawMessage
+	symbolsResult  json.RawMessage
+	backfillPlan   json.RawMessage
+	backfillResult json.RawMessage
+	// backfillGate, when set, blocks Backfill until the test closes it. That is
+	// what makes "a second job is rejected while one runs" deterministic.
+	backfillGate chan struct{}
+	err          error
+	got          quantcli.BacktestRequest
+	gotKline     quantcli.KlineQuery
+	gotInterval  string
+	gotAction    string
+	gotSymbol    string
+	gotUpdatedBy string
 }
 
 func (f *fakeQuant) Strategies(context.Context) (json.RawMessage, error) {
@@ -74,6 +80,29 @@ func (f *fakeQuant) Symbols(
 		return f.symbolsResult, f.err
 	}
 	return json.RawMessage(`{"symbols":["BTCUSDT"],"message":""}`), f.err
+}
+
+func (f *fakeQuant) BackfillPlan(
+	_ context.Context, symbol string, days int, interval string,
+) (json.RawMessage, error) {
+	f.gotSymbol = symbol
+	if f.backfillPlan != nil {
+		return f.backfillPlan, f.err
+	}
+	return json.RawMessage(`{"symbol":"BTCUSDT","complete":true,"spans":[]}`), f.err
+}
+
+func (f *fakeQuant) Backfill(
+	_ context.Context, symbol string, days int, interval string, force bool,
+) (json.RawMessage, error) {
+	f.gotSymbol = symbol
+	if f.backfillGate != nil {
+		<-f.backfillGate
+	}
+	if f.backfillResult != nil {
+		return f.backfillResult, f.err
+	}
+	return json.RawMessage(`{"symbol":"BTCUSDT","skipped":true}`), f.err
 }
 
 func init() {
@@ -226,6 +255,109 @@ func TestListSymbols(t *testing.T) {
 	if fake.gotAction != "list" {
 		t.Fatalf("action = %s", fake.gotAction)
 	}
+}
+
+func TestBackfillPlanPassThrough(t *testing.T) {
+	fake := &fakeQuant{
+		backfillPlan: json.RawMessage(`{"symbol":"SOLUSDT","complete":false,"missing_bars":100}`),
+	}
+	rec := doRequest(
+		newTestServer(fake).Router(), http.MethodGet, "/api/backfill/plan?symbol=solusdt&days=365", "",
+	)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body)
+	}
+	if fake.gotSymbol != "SOLUSDT" {
+		t.Fatalf("symbol = %s", fake.gotSymbol)
+	}
+	if !strings.Contains(rec.Body.String(), "missing_bars") {
+		t.Fatalf("body = %s", rec.Body)
+	}
+}
+
+func TestStartBackfillReturnsImmediately(t *testing.T) {
+	fake := &fakeQuant{backfillResult: json.RawMessage(`{"symbol":"SOLUSDT","skipped":true}`)}
+	server := newTestServer(fake)
+
+	rec := doRequest(server.Router(), http.MethodPost, "/api/backfill", `{"symbol":"SOLUSDT","days":365}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body)
+	}
+
+	// The job must appear right away, even before Python finishes.
+	var job backfillJob
+	if err := json.Unmarshal(rec.Body.Bytes(), &job); err != nil {
+		t.Fatal(err)
+	}
+	if job.Symbol != "SOLUSDT" {
+		t.Fatalf("job = %+v", job)
+	}
+
+	waitForBackfill(t, server, "SOLUSDT", "done")
+}
+
+func TestSecondBackfillForSameSymbolIsRejected(t *testing.T) {
+	gate := make(chan struct{})
+	fake := &fakeQuant{
+		backfillResult: json.RawMessage(`{"symbol":"SOLUSDT"}`),
+		backfillGate:   gate,
+	}
+	server := newTestServer(fake)
+	router := server.Router()
+
+	first := doRequest(router, http.MethodPost, "/api/backfill", `{"symbol":"SOLUSDT"}`)
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first status = %d", first.Code)
+	}
+	second := doRequest(router, http.MethodPost, "/api/backfill", `{"symbol":"SOLUSDT"}`)
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second status = %d body = %s", second.Code, second.Body)
+	}
+
+	close(gate)
+	waitForBackfill(t, server, "SOLUSDT", "done")
+
+	// Once finished, the symbol can be backfilled again.
+	third := doRequest(router, http.MethodPost, "/api/backfill", `{"symbol":"SOLUSDT"}`)
+	if third.Code != http.StatusAccepted {
+		t.Fatalf("third status = %d body = %s", third.Code, third.Body)
+	}
+	waitForBackfill(t, server, "SOLUSDT", "done")
+}
+
+func TestBackfillRejectsEmptySymbol(t *testing.T) {
+	fake := &fakeQuant{}
+	rec := doRequest(newTestServer(fake).Router(), http.MethodPost, "/api/backfill", `{"symbol":""}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body)
+	}
+	if fake.gotSymbol != "" {
+		t.Fatalf("python was called for %q", fake.gotSymbol)
+	}
+}
+
+func TestBackfillStatusUnknownSymbol(t *testing.T) {
+	rec := doRequest(newTestServer(&fakeQuant{}).Router(), http.MethodGet, "/api/backfill/NOPEUSDT", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body)
+	}
+}
+
+// waitForBackfill polls the registry until the job leaves the running states,
+// so tests do not leak a goroutine into the next case.
+func waitForBackfill(t *testing.T, server *Server, symbol, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		job, ok := server.backfills.get(symbol)
+		if ok && job.State == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	job, _ := server.backfills.get(symbol)
+	t.Fatalf("backfill state = %q, want %q", job.State, want)
 }
 
 func TestHealth(t *testing.T) {
