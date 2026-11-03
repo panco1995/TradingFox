@@ -386,6 +386,10 @@ code,
   margin-top: 2px;
 }
 
+.field-hint.error-text {
+  color: var(--el-color-danger);
+}
+
 .form-divider {
   margin: 16px 0 !important;
 }

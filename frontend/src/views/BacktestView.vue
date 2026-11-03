@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { Setting } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 
-import { getStrategies, runBacktest } from "@/api";
+import { getKlineSymbols, getStrategies, runBacktest } from "@/api";
 import EquityChart from "@/components/EquityChart.vue";
 import ParamForm from "@/components/ParamForm.vue";
 import type { BacktestReport, StrategySpec, Trade } from "@/types";
@@ -41,10 +41,14 @@ const running = ref(false);
 const report = ref<BacktestReport | null>(null);
 const errorMessage = ref("");
 
+const symbolOptions = ref<string[]>([]);
+const symbolsLoading = ref(false);
+const symbolsError = ref("");
+
 const form = reactive({
-  symbols: "BTCUSDT",
+  symbol: "BTCUSDT",
   days: 30,
-  interval: "1m",
+  interval: "15m",
   cash: 10000,
   feeBps: 5,
   slippageBps: 2,
@@ -58,12 +62,10 @@ const reportSpec = computed(
   () => strategies.value.find((item) => item.name === report.value?.strategy) ?? null
 );
 
-const symbols = computed(() =>
-  form.symbols
-    .split(/[\s,]+/)
-    .map((item) => item.trim().toUpperCase())
-    .filter(Boolean)
-);
+const symbols = computed(() => {
+  const symbol = form.symbol.trim().toUpperCase();
+  return symbol ? [symbol] : [];
+});
 
 const metricItems = computed(() => {
   const metrics = report.value?.metrics ?? {};
@@ -93,7 +95,37 @@ const paramsText = computed(() =>
     .join("  ")
 );
 
-onMounted(loadStrategies);
+onMounted(async () => {
+  await Promise.all([loadStrategies(), loadSymbols()]);
+});
+
+watch(
+  () => form.interval,
+  () => {
+    void loadSymbols();
+  }
+);
+
+async function loadSymbols() {
+  symbolsLoading.value = true;
+  symbolsError.value = "";
+  try {
+    const available = (await getKlineSymbols(form.interval)).symbols;
+    symbolOptions.value = available;
+    const known = new Set(available);
+    if (known.has(form.symbol)) {
+      // Keep the current choice when it is still available at this interval.
+    } else if (known.has("BTCUSDT")) {
+      form.symbol = "BTCUSDT";
+    } else {
+      form.symbol = available[0] ?? "";
+    }
+  } catch (error) {
+    symbolsError.value = (error as Error).message;
+  } finally {
+    symbolsLoading.value = false;
+  }
+}
 
 async function loadStrategies() {
   strategiesLoading.value = true;
@@ -128,11 +160,7 @@ async function submit() {
     return;
   }
   if (symbols.value.length === 0) {
-    ElMessage.warning("至少需要一个标的，例如 BTCUSDT");
-    return;
-  }
-  if (symbols.value.length > 10) {
-    ElMessage.warning("单次回测最多 10 个标的");
+    ElMessage.warning("请选择一个交易对");
     return;
   }
   const days = Math.round(form.days);
@@ -319,8 +347,28 @@ function downloadReport() {
             <ParamForm v-model="params" :spec="spec" />
 
             <el-divider class="form-divider" content-position="left">行情</el-divider>
-            <el-form-item label="标的（逗号分隔，最多 10 个）">
-              <el-input v-model="form.symbols" placeholder="BTCUSDT, ETHUSDT" spellcheck="false" />
+            <el-form-item label="交易对">
+              <el-select
+                v-model="form.symbol"
+                filterable
+                :loading="symbolsLoading"
+                :disabled="!symbolsLoading && symbolOptions.length === 0"
+                placeholder="选择交易对"
+                no-data-text="本地暂无行情数据"
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="symbol in symbolOptions"
+                  :key="symbol"
+                  :value="symbol"
+                  :label="symbol"
+                />
+              </el-select>
+              <p v-if="symbolsError" class="field-hint error-text">{{ symbolsError }}</p>
+              <p v-else-if="!symbolsLoading && symbolOptions.length === 0" class="field-hint">
+                本地还没有可用的行情数据，请先到「数据采集」添加交易对并回填。
+              </p>
+              <p v-else class="field-hint">只列出本地已有 K 线数据的交易对。</p>
             </el-form-item>
 
             <el-row :gutter="10">
