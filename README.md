@@ -10,7 +10,7 @@
 | 模块 | 状态 |
 |---|---|
 | 行情回填 / 实时采集 / Parquet 存储 / 质量检查 | 可用 |
-| 策略注册表 + 内置策略（双均线、唐奇安） | 可用 |
+| 策略注册表 + 内置策略（双均线、唐奇安、Supertrend、布林带 + RSI） | 可用 |
 | 事件驱动回测 + 手续费/滑点/参与率 + 绩效报告 | 可用 |
 | Go Gin API（登录、用户、策略、回测、凭据） | 可用 |
 | Vue 3 管理后台（登录、K 线、回测、账户设置、用户管理） | 可用 |
@@ -177,6 +177,18 @@ cd quant
 
 报告默认写入 `data/reports/<strategy>_<symbols>/<timestamp>/`：`metrics.json`、`equity.svg`、`drawdown.svg`。
 通过 Go API 触发时按用户分区：`data/reports/user_<id>/<strategy>_<symbols>/<timestamp>/`。
+
+内置策略（全部只做多，适配现货）：
+
+| 名称 | 类型 | 适用周期 | 说明 |
+|---|---|---|---|
+| `ma_cross` | 趋势 | 1h+ | 双均线交叉 + ATR 止损 |
+| `donchian` | 突破 | 1h+ | 唐奇安通道突破 |
+| `supertrend` | 趋势 | 15m | ATR 跟踪止损，收盘翻转方向，推荐作为 15m 趋势策略 |
+| `bollinger_rsi` | 均值回归 | 15m | 布林下轨 + RSI 超卖买入，中轨/RSI/ATR/超时离场 |
+
+15m 策略建议先用 `supertrend`（趋势）和 `bollinger_rsi`（震荡）各跑一遍，
+它们的信号逻辑互补；样本外表现比单一策略更稳。
 
 回测时序（防止未来函数）：
 

@@ -64,7 +64,7 @@ function onNumber(entry: Entry, value: number | null | undefined) {
 </script>
 
 <template>
-  <div v-if="entries.length">
+  <div v-if="entries.length" class="param-grid">
     <el-form-item
       v-for="entry in entries"
       :key="entry.key"
@@ -116,3 +116,11 @@ function onNumber(entry: Entry, value: number | null | undefined) {
 
   <p v-else class="muted">该策略没有可调参数。</p>
 </template>
+
+<style scoped>
+.param-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 12px;
+}
+</style>

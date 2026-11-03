@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Refresh } from "@element-plus/icons-vue";
 import { onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 
 import { getStrategies } from "@/api";
 import type { ParamProperty, StrategySpec } from "@/types";
@@ -17,7 +18,13 @@ const strategies = ref<StrategySpec[]>([]);
 const loading = ref(true);
 const errorMessage = ref("");
 
+const router = useRouter();
+
 onMounted(load);
+
+function openBacktest(name: string) {
+  void router.push({ name: "backtest", query: { strategy: name } });
+}
 
 async function load() {
   loading.value = true;
@@ -106,9 +113,23 @@ function paramRows(spec: StrategySpec): ParamRow[] {
           <el-table-column prop="range" label="范围" min-width="96" />
           <el-table-column prop="defaultValue" label="默认" width="76" align="right" />
         </el-table>
+
+        <div class="strategy-actions">
+          <el-button type="primary" plain size="small" @click="openBacktest(item.name)">
+            用此策略回测
+          </el-button>
+        </div>
       </el-card>
     </div>
 
     <el-empty v-if="!loading && !errorMessage && strategies.length === 0" description="没有已注册的策略" />
   </div>
 </template>
+
+<style scoped>
+.strategy-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+</style>

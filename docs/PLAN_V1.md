@@ -308,7 +308,7 @@ trading/
 │   │   ├── data/                # binance_rest, binance_ws, parquet_store, quality
 │   │   ├── backtest/            # engine, matching, costs, metrics
 │   │   ├── trade/               # oms, broker_binance, risk, reconciler
-│   │   ├── strategies/ma_cross/
+│   │   ├── strategies/          # 策略插件：ma_cross、donchian、supertrend、bollinger_rsi
 │   │   └── agent/               # grpc client, heartbeat, runner
 │   └── tests/
 ├── frontend/                    # Vue 3 管理后台（独立工程）

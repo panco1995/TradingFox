@@ -9,7 +9,7 @@ from quant.strategies import registry
 
 
 def test_builtin_strategies_are_discovered():
-    assert set(registry.names()) >= {"ma_cross", "donchian"}
+    assert set(registry.names()) >= {"ma_cross", "donchian", "bollinger_rsi", "supertrend"}
 
 
 def test_describe_all_contains_param_schema_for_the_ui():

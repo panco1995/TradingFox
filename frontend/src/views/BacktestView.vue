@@ -2,6 +2,7 @@
 import { Setting } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { computed, onMounted, reactive, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 
 import { getKlineSymbols, getStrategies, runBacktest } from "@/api";
 import EquityChart from "@/components/EquityChart.vue";
@@ -40,6 +41,8 @@ const params = ref<Record<string, unknown>>({});
 const running = ref(false);
 const report = ref<BacktestReport | null>(null);
 const errorMessage = ref("");
+
+const route = useRoute();
 
 const symbolOptions = ref<string[]>([]);
 const symbolsLoading = ref(false);
@@ -106,6 +109,15 @@ watch(
   }
 );
 
+watch(
+  () => route.query.strategy,
+  (value) => {
+    if (typeof value !== "string" || value === strategyName.value) return;
+    if (!strategies.value.some((item) => item.name === value)) return;
+    applyStrategy(value);
+  }
+);
+
 async function loadSymbols() {
   symbolsLoading.value = true;
   symbolsError.value = "";
@@ -137,8 +149,11 @@ async function loadStrategies() {
       return;
     }
     const saved = localStorage.getItem("quant.strategy");
+    const requested = typeof route.query.strategy === "string" ? route.query.strategy : "";
     const initial =
-      strategies.value.find((item) => item.name === saved) ?? strategies.value[0];
+      strategies.value.find((item) => item.name === requested) ??
+      strategies.value.find((item) => item.name === saved) ??
+      strategies.value[0];
     applyStrategy(initial.name);
   } catch (error) {
     strategiesError.value = (error as Error).message;
